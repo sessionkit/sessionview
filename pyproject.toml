@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sessionview"
+version = "0.2.0"
+description = "A sidebar for tmux: your projects (sessions) and your agents, here and on remote hosts."
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+authors = [{ name = "Mike Bailey", email = "mike@sessionkit.ai" }]
+license = "AGPL-3.0-or-later"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Terminals :: Terminal Emulators/X Terminals",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/sessionkit/sessionview"
+Repository = "https://github.com/sessionkit/sessionview"
+
+# One console script per public command; each runs its namesake under
+# sessionview/_data/bin (src/sessionview/__init__.py). The helpers the frame
+# and the tmux bindings call by path stay off PATH.
+[project.scripts]
+sessionview = "sessionview:main"
+sessionview-config = "sessionview:main"
+sessionview-session = "sessionview:main"
+sessionview-messages = "sessionview:main"
+
+[tool.hatch.build]
+exclude = ["**/__pycache__"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sessionview"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"bin" = "sessionview/_data/bin"
+"lib" = "sessionview/_data/lib"
+"config" = "sessionview/_data/config"
+"tmux" = "sessionview/_data/tmux"
+"plugins" = "sessionview/_data/plugins"
+"macos" = "sessionview/_data/macos"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/sessionview", "bin", "lib", "config", "tmux", "plugins", "macos", "README.md", "LICENSE", "pyproject.toml"]

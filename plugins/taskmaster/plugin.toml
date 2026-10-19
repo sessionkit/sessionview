@@ -1,0 +1,61 @@
+# taskmaster — project things: taskmaster keeps project things. Absent (hidden,
+# not greyed) when tm is not on the machine. The
+# project's super is found from `session list` (a live seat named
+# NAME+super.*); Message/Speak super are greyed when none is up.
+id = "taskmaster"
+name = "Taskmaster"
+requires = ["tm", "message"]
+
+[[actions]]
+id = "tasks"
+title = "Tasks"
+key = "t"
+contexts = ["project"]
+when = "project.tm_dir"
+command = ["./tasks-tab", "{project.name}", "{project.tm_dir}"]
+
+[[actions]]
+# Kick: ONE line, and tm picks the role from the scope (project -> super,
+# store -> gc; feature/task -> worker/foreman). With taskmaster it is
+# `tm kick`, otherwise `session start`.
+# The "otherwise" is this plugin's `requires`: no tm on PATH, no
+# plugin, no Kick - Start agent (builtin) is what everyone else gets.
+# --project pins the dimension so a store named like a project cannot make
+# a click error out on ambiguity (tm kick's address grammar).
+id = "kick"
+title = "Kick"
+key = "k"
+contexts = ["project"]
+when = "project.tm_dir"
+command = ["tm", "kick", "--project", "{project.name}"]
+
+[[actions]]
+# The store row's Kick: the general contractor, started in the store itself,
+# at store scope. The store row has the same dots menu as a project row, for
+# consistency, and Kick is on it.
+id = "kick-store"
+title = "Kick"
+key = "k"
+contexts = ["store"]
+command = ["tm", "kick", "--store", "{store.name}"]
+
+[[actions]]
+id = "message-super"
+title = "Message super"
+key = "m"
+contexts = ["project"]
+when = "project.super_sid"
+prompt = "mail super"
+command = ["../../bin/sessionview-send", "{project.super_sid}", "-s", "{input_subject}", "-f", "{body}"]
+body = "{input}"
+
+[[actions]]
+id = "speak-super"
+title = "Speak super"
+key = "s"
+contexts = ["project"]
+when = "project.super_sid"
+# was `session send {super_seat} -v` (typed "v" into the pane); session send
+# is disabled, so speak is a mail, as the pane
+# menu's Speak item is.
+command = ["../../bin/sessionview-send", "{project.super_sid}", "-s", "speak EOM", "--no-body"]

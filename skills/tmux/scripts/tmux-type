@@ -1,0 +1,28 @@
+#!/bin/sh
+# tmux-type [-L SOCK] [--force] PANE TEXT - literal text, then Enter, as two
+# send-keys calls. Refuses an editor/TUI pane (keys are interpreted there)
+# unless --force. Shows the last 5 lines afterwards so you see what happened.
+# Flags go anywhere (found in review: the doc said `--force` last and the
+# parser only saw it first).
+set -eu
+L=""; F=0; P=""; T=""
+while [ $# -gt 0 ]; do case "$1" in
+  -L) L="-L $2"; shift;;
+  --force) F=1;;
+  *) if [ -z "$P" ]; then P="$1"; elif [ -z "$T" ]; then T="$1"
+     else echo "tmux-type: extra argument '$1'" >&2; exit 2; fi;;
+esac; shift; done
+: "${P:?pane}" "${T:?text}"
+# shellcheck disable=SC2086
+CMD="$(tmux $L display -p -t "$P" '#{pane_current_command}')"
+case "$CMD" in
+  nvim|vim|vi|lazygit|less|more|htop|top|claude|node|python|python3|ssh|fzf)
+    [ "$F" = 1 ] || { echo "tmux-type: $P runs $CMD - keys would be interpreted; --force if you mean it" >&2; exit 3; };;
+esac
+# shellcheck disable=SC2086
+tmux $L send-keys -t "$P" -l "$T"
+# shellcheck disable=SC2086
+tmux $L send-keys -t "$P" Enter
+sleep 0.3
+# shellcheck disable=SC2086
+tmux $L capture-pane -p -t "$P" -S -5 | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'

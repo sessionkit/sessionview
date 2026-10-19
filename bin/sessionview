@@ -1,0 +1,47 @@
+#!/bin/sh
+# sessionview - a sidebar for tmux, in this terminal. Needs tmux, nothing else.
+#
+# usage: sessionview [SESSION] [--sock SERVER] [--width N]
+#        sessionview COMMAND [ARGS]
+#
+#   sessionview [SESSION]  the frame: sidebar on the left, SESSION attached on
+#                    the right (default main). --sock names its tmux server;
+#                    --width, columns.
+#   sessionview config     settings: no verb opens the screen (get/set/list ...)
+#   sessionview session NAME    open a project session with its standard tabs
+#   sessionview messages PROJECT   a project's mail, read-only, in NeoMutt
+#   sessionview install    check requirements (--app: the macOS Dock app)
+#   sessionview autostart --status   which agent starts when sessionview opens
+#   sessionview sidebar    the sidebar under its supervisor (the frame's left
+#                    pane runs this). In it: q reloads, Q quits.
+#
+# Also: prefix H in any tmux client opens the sidebar as a popup.
+# Config: ~/.sessionkit/view/settings/view.json over the shipped config/config.json.
+# State: ~/.local/state/sessionview (SESSIONVIEW_STATE=).
+#
+# Ghostty was stripped out so this works in any terminal with only tmux. It
+# started as ghostty-herd; the Ghostty launcher, the split hook and cmd+d
+# went with the frame (1fd29ce) and this rename. -h prints the usage above
+# without the comment marks, so the help reads cleanly.
+SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
+case "${1:-}" in
+  -h|--help|help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+  config|session|messages|install|autostart|terminal|usermail)
+    sub="$1"; shift; exec "$SESSIONVIEW_ROOT/bin/sessionview-$sub" "$@";;
+  sidebar)
+    # The supervisor: q = exit 0 = reload (picks up an edited tmux-sidebar or
+    # sidebar.toml), Q = exit 3 = quit. A CRASH IS NOT A QUIT: any other exit
+    # holds the error on screen and waits (one undefined name once took the
+    # whole sidebar away).
+    while :; do
+      "$SESSIONVIEW_ROOT/bin/tmux-sidebar"; rc=$?
+      [ "$rc" = 3 ] && break
+      [ "$rc" = 0 ] && continue
+      printf '\n\033[31m sidebar crashed (exit %s)\033[0m -- Enter restarts, Q then Enter quits. ' "$rc"
+      read -r k || break
+      case "$k" in [Qq]) break;; esac
+    done
+    exit 0;;
+esac
+exec "$SESSIONVIEW_ROOT/bin/sessionview-frame" "$@"

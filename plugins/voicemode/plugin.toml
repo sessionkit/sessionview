@@ -1,0 +1,18 @@
+# voicemode — adds one verb, Speak. Present when the voicemode plugin is
+# installed for Claude Code.
+# Speak mails the seat "speak EOM" (the wording an armed agent answers to),
+# through sessionmail's `message send`. A seat with a pane used to get
+# `session send NAME -v` typed in; session send is disabled (it typed into an
+# agent's pane by accident). Greyed
+# for a seat whose argv carries no voicemode plugin -- it could not answer.
+id = "voicemode"
+name = "Voicemode"
+requires = ["~/.claude/plugins/marketplaces/voicemode", "message"]
+
+[[actions]]
+id = "speak"
+title = "Speak"
+key = "s"
+contexts = ["agent"]
+when = "agent.voice"
+command = ["./speak", "{agent.name}", "{agent.address}"]

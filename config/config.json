@@ -1,0 +1,178 @@
+{
+  "_readme": "The TEMPLATE every default lives in, explicitly: no hidden defaults. ~/.sessionkit/view/settings/view.json is made from it on first read; keys are documented in config/README.md.",
+  "popup_bg": "#181924",
+  "width": 34,
+  "_fit": "fixed | auto. fixed: the sidebar is `width` columns. auto: it fits its contents - the widest row plus one, clamped to [width_min, width_max]; grows at once, gives width back after a few quiet redraws. Dragging the border always wins: it writes `width` and sets fit back to fixed. narrow: the names only - the widest LEFT half plus one, no floor: as narrow as what is on screen allows. focus: narrow while a click is in the main section, `width` while the bar has focus; double-click blank space or `w` pins it big. A click outside retracts the bar; a click in it snaps it wide again.",
+  "_brand": "The word on the top row beside the sidebar icon, dim. Empty hides it; the icon stays. It makes a screenshot say what it shows.",
+  "brand": "sessionview.dev",
+  "fit": "fixed",
+  "width_min": 20,
+  "width_max": 60,
+  "refresh": 2,
+  "project_two_line": false,
+  "project_expand_selected": false,
+  "project_gap": 0,
+  "agent_two_line": false,
+  "agent_gap": 0,
+  "selected_fg": "#f0f3ff",
+  "selected_bold": true,
+  "tab_glyphs": true,
+  "remote_heading": " remote",
+  "_remotes": "EMPTY by default: a fresh install must not inherit anyone else's host. A shipped host would have every new sidebar reaching for someone else's machine. Put your own ssh hosts in ~/.sessionkit/view/settings/view.json.",
+  "remotes": [],
+  "remote_refresh": 5,
+  "_remote_connect": "ride | auto. ride: the sidebar reads a remote host ONLY over an ssh control master you already hold (your own `ssh HOST` makes one, if your ssh config has ControlMaster); with none, the row says `not connected \u00b7 ssh HOST` and nothing is attempted. auto: the sidebar connects by itself every remote_refresh - which, with a hardware key, is a touch request every few seconds.",
+  "remote_connect": "ride",
+  "store_format": " {store}",
+  "_user_mail_command": "The user's OWN mail, the sidebar's `✉ mail` row: under no store and no project, between the brand and the store row. A click runs bin/sessionview-usermail - find-or-create ONE session, user_mail_session on user_mail_socket, with one `mail` window, a shell in ~ with this typed in - and moves you there. Typed AS IS: no -R, no -F, no rc of SessionView's - your own config, read-write, the opposite of a project's read-only `messages` tab. Only the first word is checked on PATH; `neomutt` missing falls back to `mutt`. \"\" = off: no row, and that session is a plain project row again. It is a place for your own mutt, separate from the projects' mail.",
+  "user_mail_command": "neomutt",
+  "_user_mail_socket": "The tmux server (-L) the user mail session lives on, whichever store you are viewing. `default`, where the usual `main` session lives, so the mail session already has sessionview's look and the sidebar. A server that is not running is refused, never started. `user` is one line away - but a fresh server gets no sessionview bootstrap in v1.",
+  "user_mail_socket": "default",
+  "_user_mail_session": "The ONE user mail session's name: one mutt, so two never contend for a maildir. Hidden from the project rows on user_mail_socket (as the store session is) while the row is drawn; the row is the selected row while you are on it. One that exists is never changed - no window added, renamed or re-typed.",
+  "user_mail_session": "mail",
+  "_user_mail_format": "The row's label. No unread count in v1: that would be a poller.",
+  "user_mail_format": " ✉ mail",
+  "project_format": " {glyph} {name}  {branch}\t{ready} ",
+  "_ready": "The {ready} field: a project's unmerged ready tags (ready/* not yet merged into its default branch, else origin/<default>) - reviewed work waiting for you to merge. ready_format with {n} (the count; ? when no default branch resolves) and {glyph} (ready_glyph); empty when there are none. The count sits LEFT of the glyph so the glyphs line up down the right edge. After the TAB in project_format, so it is right-aligned and drops whole when the row is full. {ready_n} is the bare count. \"{glyph}\" alone hides the count.",
+  "ready_glyph": "\ud83e\udd5a",
+  "ready_format": "{n}{glyph}",
+  "_ready_window": "A click on the badge selects this tab of the project (opening it if it is not) and then switches to the project - the git tab, lazygit, where the tags are. \"\" = the badge is just part of the row. The git tab is where you see what the tags are.",
+  "ready_window": "git",
+  "project_format2": "   {repo} \u00b7 {branch_raw}",
+  "_code_nvim": "true: the `editor` window (below) opens by itself when a session opens, and you land on it; false: it is offered by the new-tab picker only. Off by default - nvim is not started unasked, since each nvim with its language servers is heavy. repo is a shell, always; the editor is its own tab.",
+  "code_nvim": false,
+  "_project_dirs": "Where your projects live on disk, when a task manager is not the one telling us. Each entry is a directory that CONTAINS checkouts; every git repo found under it (a dir holding a .git, at up to project_dirs_depth levels) is offered by the new-session picker under its folder name, and is what that name opens. Merged with `tm project list`; tm wins a name collision, and a path that does not exist is simply skipped - so this is silent for anyone it does not apply to. ~ is expanded. It is for someone with no task manager who keeps their work in, say, ~/workspace: without it, the picker is empty.",
+  "project_dirs": ["~/workspace"],
+  "_project_dirs_depth": "How many levels under each project_dirs entry to look for a checkout. 1 finds ~/workspace/app; 2 also finds ~/workspace/org/app. Kept small on purpose: this runs on a redraw (cached 60s), and a deep scan of a home directory is not free.",
+  "project_dirs_depth": 2,
+  "picker_order": "recent",
+  "_windows": "The standard tabs of a project session AND the new-tab picker's suggestions - ONE list feeds both. Fields: position (int, sparse - 10 20 30 - so things slot in), name (the tab label), when (always | has_repo | has_projdir | has_mail | fallback: a NAMED predicate the code tests, never an expression, so no code runs on a name; fallback = only when nothing else was built), cwd (root | repo | projdir: the three dirs sessionview-session computes, never evaluated), command (optional; typed into the window once it exists; {editor} = VISUAL, else EDITOR, else nvim - the sidebar's own rule; {readme} = the repo's README file; {pmd} = PROJECT.md when the store has one; {project} = the session's name; {store} = the store's identity, the slug its mail lives under - the `tm store list` record for the session's store, its `store` field else `name`; empty when there is no store registry), focus (optional, the tab you land on - named, not counted; at most one), auto (optional, default true; false = offered by the picker, never opened at session open), console (optional, default false; true = a shell pane UNDER the tab's own, in the same dir, one row high until you select it, then 20% of the window, one row again when you select back - window-scoped tmux hooks, nothing global; the shipped git tab carries it, minimised by default). Names are PLACES - repo, git, project, tasks - not kinds of content (`code` became `repo`). Right-click a project > New tab, or the tab bar's +, offers these; any other typed name is a plain tab in the session's directory. PINNING: in the new-tab picker, ^p or a right-click on a row toggles the tab - a pinned tab opens with the session, an unpinned one is only offered. The pin is `window_pins` ({name: bool}, laid over each entry's `auto`), written to ~/.sessionkit/view/settings/view.json; refused with the path when a store or project .sessionview sets `window_pins`. `tasks` ships unpinned: its live list polled at 20-30% CPU for 90 min, so sessionview does not open it unasked. A `fallback` entry with auto true is pinned too - opens with every session; unset or false keeps it the safety net. `messages` (has_mail = THIS store has the project's mailbox: `message path STORE/NAME` resolves one, by the store's identity, so a name two stores share opens its own store's box or none, never the other's; no registry = the bare `message path NAME`; a registry that does not hold the session's store = no tab) is the project's mail, read-only in neomutt via sessionview-messages, open by default.",
+  "windows": [
+    {
+      "position": 10,
+      "name": "project",
+      "when": "has_projdir",
+      "cwd": "projdir",
+      "focus": true,
+      "command": "{editor} {pmd}"
+    },
+    {
+      "position": 20,
+      "name": "tasks",
+      "when": "has_projdir",
+      "cwd": "projdir",
+      "command": "tasks",
+      "auto": false
+    },
+    {
+      "position": 30,
+      "name": "messages",
+      "when": "has_mail",
+      "cwd": "projdir",
+      "command": "sessionview-messages {project} --store {store}"
+    },
+    {
+      "position": 40,
+      "name": "repo",
+      "when": "has_repo",
+      "cwd": "repo"
+    },
+    {
+      "position": 50,
+      "name": "git",
+      "when": "has_repo",
+      "cwd": "repo",
+      "command": "lazygit",
+      "console": true
+    },
+    {
+      "position": 60,
+      "name": "editor",
+      "when": "has_repo",
+      "cwd": "repo",
+      "command": "{editor} {readme}",
+      "auto": false
+    },
+    {
+      "position": 90,
+      "name": "shell",
+      "when": "fallback",
+      "cwd": "root"
+    }
+  ],
+  "_store_windows": "The store view's tabs: the session the sidebar's store row opens, built by `sessionview-session --store-view STORENAME`. The same fields as `windows`, kept as its own list so a project's new-tab picker and pins never see a store entry. Its own names (store mode only): when has_store_project (the store project: projects/store, else projects/<store>, else none - no tasks tab and no error) | has_slipbox | has_scripts (the store root's slipbox/ and scripts/ are dirs) | has_store_mail (`message path <store>` resolves: the STORE box, by the store's name, never the session's); cwd store | slipbox | scripts, and projdir is the store project; {store} = the store's name, {store_project} = the store project's name. tasks is a ONE-SHOT list, never the live `tasks` poller; slipbox opens in the editor; scripts is a shell there; messages is the store's mail, read-only. On a store session that already exists, the tabs it lacks are ADDED and nothing else changes: never closed, renamed or reordered.",
+  "store_windows": [
+    {
+      "position": 10,
+      "name": "tasks",
+      "when": "has_store_project",
+      "cwd": "projdir",
+      "focus": true,
+      "command": "tm task list --project {store_project}"
+    },
+    {
+      "position": 20,
+      "name": "slipbox",
+      "when": "has_slipbox",
+      "cwd": "slipbox",
+      "command": "{editor} ."
+    },
+    {
+      "position": 30,
+      "name": "scripts",
+      "when": "has_scripts",
+      "cwd": "scripts"
+    },
+    {
+      "position": 40,
+      "name": "messages",
+      "when": "has_store_mail",
+      "cwd": "store",
+      "command": "sessionview-messages {store}"
+    },
+    {
+      "position": 90,
+      "name": "shell",
+      "when": "fallback",
+      "cwd": "store"
+    }
+  ],
+  "_window_pins": "Your pins, laid over the `windows` list's `auto`: {\"editor\": true} opens the editor with every session, {\"git\": false} stops git opening. Written by ^p / right-click in the new-tab picker; a delta, so the list itself (template, store or project) keeps flowing to you. EMPTY by default.",
+  "window_pins": {},
+  "_pinned_agents": "Agent names held at the TOP, in this order - ONE list for two places: pinned means pinned everywhere. (1) The start-an-agent picker lists them first; the rest of `session start --list-agents` follows. (2) The live agents list sorts a running agent whose name is pinned first, in pin order, whatever its project, status or idle; the rest keep the `sort` order below them. Grouped, the pinned rows sit ABOVE every group, not inside their project's. `hide` and the current filter still apply first: a pin orders a row, it never unhides one. [\"alice\", \"bob\"] keeps alice and bob at the top. EMPTY by default: a fresh install pins nobody. A pinned name the launcher cannot start is not offered - a list that lies is worse than no list. ^p or a right-click on a row in the start-an-agent picker toggles it.",
+  "pinned_agents": [],
+  "_mid_format": "The row between projects and agents. Left word opens a new SESSION. A right word (after a TAB) opens the project menu - there is none by default: the selected project row carries its own menu as three dots at the right. The click target is the row, not the text.",
+  "mid_format": " +",
+  "agents_heading": " agents\tgrouped ",
+  "agent_format": " {glyph} {at}{label}\t{model} {ctx} ",
+  "agent_format2": "   {agent}\t{ctx} {idle} ",
+  "collapse": "",
+  "group_by": "none",
+  "group_format": " {group}",
+  "sort": [
+    "rank",
+    "idle_s"
+  ],
+  "hide": [],
+  "show_spaces": true,
+  "agent_command": [
+    "session",
+    "start",
+    "--tmux-target",
+    "{project}",
+    "--no-switch",
+    "{agent}"
+  ],
+  "_autostart_agent": "ONE key, THREE states: \"ask\" = ask once on open and remember the answer (the SHIPPED value - an installed copy must not spawn an agent on someone's machine unasked, the same rule that ships remotes: []); \"\" = never; a NAME = start that agent in its own window of the inner session. An agent already running is never started a second time.",
+  "autostart_agent": "ask",
+  "_terminal": "EMPTY by default: which terminal the dock app opens sessionview in - iterm | ghostty | terminal. Empty means work it out (a terminal already running, else iTerm, else Terminal). Ask `bin/sessionview-terminal --why`. Set it to the terminal you use.",
+  "terminal": "",
+  "_fullscreen": "FALSE by default: whether the dock app opens sessionview FULL SCREEN (macOS native full screen, the green button - not zoomed). On Terminal.app this needs Accessibility permission for SessionView.app (System Settings > Privacy & Security > Accessibility); the app says so in a dialog rather than failing quietly. iTerm and Ghostty need no permission.",
+  "fullscreen": false,
+  "_pane_menu": "FALSE by default: the agent pane menu - right-click an agent's pane for Speak / Continue / Read Clipboard / Park / Succeed, each a mail to that agent (tmux/agent-menu.conf, bin/tmux-send-agent). OPT-IN because a tmux key binding is global to the server: turning this on REPLACES your own right-click menu. When true, sessionview-frame loads it into the server at every launch, so it works whether or not tmux was already running. Without session view: `source-file -q <sessionview>/tmux/agent-menu.conf` in ~/.tmux.conf (a link or a conf.d glob works too). Turning it OFF takes effect when the tmux server restarts: nothing unbinds a running server's menu, since that would also drop the user's own.",
+  "pane_menu": false,
+  "_pane_menu_from": "EMPTY by default: the OLDER name for mail_from, still honoured when mail_from is empty. Set mail_from instead.",
+  "pane_menu_from": "",
+  "_mail_from": "EMPTY by default: who session view's mail is FROM - the human at the keyboard, never an agent. Used by the sidebar's Message, the plugin actions that mail (Continue, Settle, Speak, ...) and the agent pane menu. First non-empty wins: $SESSIONVIEW_FROM, $SESSIONVIEW_MENU_FROM, this key, pane_menu_from, $USER, then the word sessionview. Set it when your login name is not your mail name (bin/sessionview-from prints what is in effect).",
+  "mail_from": ""
+}

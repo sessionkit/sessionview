@@ -1,0 +1,45 @@
+#!/bin/sh
+# sessionview-terminal - which terminal should sessionview open in?
+#
+#   sessionview-terminal            one word: iterm | ghostty | terminal
+#   sessionview-terminal --why      the same word, and how it was chosen
+#
+# ONE answer, for the dock applet and anything else that launches a window, so
+# the choice lives in the SAME config cascade as every other setting
+# (sessionview-config: template > ~/.sessionkit/view/settings/view.json > store) instead
+# of a one-word sidecar no `sessionview-config dump` can see.
+#
+# Order:
+#   1. `terminal` in the config cascade   - the user's stated preference
+#   2. a terminal RUNNING right now       - iTerm, Terminal, Ghostty
+#   3. installed                          - iTerm, else Terminal (always there)
+#
+# Why this exists: after a REBOOT nothing is running, so step 2 is empty and the
+# applet fell through to iTerm - which is not what every user runs. The plain
+# test - reboot, click the icon, the preferred terminal opens - failed on the
+# word PREFERRED, on a fallback ordering nobody had ever been asked about. The
+# fix is not a better guess; it is asking, once,
+# and keeping the answer where the rest of the config lives.
+set -u
+SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+ANSWER=""; WHY=""
+pick="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get terminal 2>/dev/null || true)"
+case "$pick" in
+  iterm|iTerm|ITERM)          ANSWER=iterm;    WHY="config: terminal=$pick";;
+  ghostty|Ghostty|GHOSTTY)    ANSWER=ghostty;  WHY="config: terminal=$pick";;
+  terminal|Terminal|TERMINAL) ANSWER=terminal; WHY="config: terminal=$pick";;
+  "")                         ;;
+  *)                          WHY="config: terminal=$pick is not a terminal I know, ignored; ";;
+esac
+if [ -z "$ANSWER" ]; then
+  running() { pgrep -x "$1" >/dev/null 2>&1; }
+  if   running iTerm2 || running iTerm;    then ANSWER=iterm;    WHY="${WHY}running: iTerm"
+  elif running Terminal;                   then ANSWER=terminal; WHY="${WHY}running: Terminal"
+  elif running ghostty || running Ghostty; then ANSWER=ghostty;  WHY="${WHY}running: Ghostty"
+  elif [ -d /Applications/iTerm.app ];     then ANSWER=iterm;    WHY="${WHY}installed: iTerm (nothing running)"
+  else                                          ANSWER=terminal; WHY="${WHY}installed: Terminal (the always-present fallback)"
+  fi
+fi
+echo "$ANSWER"
+[ "${1:-}" = "--why" ] && printf '  %s\n' "$WHY"
+exit 0

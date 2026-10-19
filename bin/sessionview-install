@@ -1,0 +1,114 @@
+#!/bin/sh
+# sessionview-install - put sessionview on PATH and say what is missing.
+#
+#   git clone https://github.com/sessionkit/sessionview ~/Code/sessionview \
+#     && ~/Code/sessionview/bin/sessionview-install
+#   make install                          the same thing, from the checkout
+#   sessionview-install --check           report only, change nothing
+#   sessionview-install --app             build and install the macOS Dock app
+#   uv tool install sessionview           the package: commands on PATH, then
+#                                         `sessionview install` only checks
+#
+# Sharing with a new user needs an installer: clone it, run one script, and
+# sessionview works. The first new user got a README with a nine-name
+# symlink line and a 100-line care pack; this is that line, with the checks
+# that were done by hand (tmux 3.6a satisfied `brew install tmux` silently
+# and sat below the 3.7 floor).
+#
+# What it does: symlinks every bin/ tool into ~/.local/bin (or $PREFIX/bin),
+# then checks each requirement and says PASS / WARN / MISSING with the fix.
+# It installs nothing else - your package manager owns tmux and python - and
+# it never edits your shell config: if ~/.local/bin is not on PATH it prints
+# the line to add. Re-running is safe (ln -sf).
+set -u
+SESSIONVIEW_ROOT="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
+BIN="${PREFIX:-$HOME/.local}/bin"
+CHECK=""; APP=""
+case "${1:-}" in
+  --check) CHECK=1;;
+  --app) exec "$SESSIONVIEW_ROOT/bin/sessionview-app-install" "${2:-}";;
+esac
+# Installed as a package (uv tool install sessionview), the commands are
+# already on PATH and this checkout is site-packages: link nothing.
+PACKAGED=""; [ "$(basename "$SESSIONVIEW_ROOT")" = "_data" ] && PACKAGED=1
+rc=0
+say()  { printf '  %-8s %s\n' "$1" "$2"; }
+fail() { say MISSING "$1"; rc=1; }
+
+if [ -z "$CHECK" ] && [ -z "$PACKAGED" ]; then
+  mkdir -p "$BIN"
+  # Drop links to tools that no longer exist (sessionview-configure, 0.2.0).
+  for l in "$BIN"/sessionview* "$BIN"/tmux-sidebar; do
+    [ -L "$l" ] && [ ! -e "$l" ] && case "$(readlink "$l")" in "$SESSIONVIEW_ROOT"/*) rm -f "$l";; esac
+  done
+  n=0
+  for f in "$SESSIONVIEW_ROOT"/bin/sessionview* "$SESSIONVIEW_ROOT"/bin/tmux-sidebar; do
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    ln -sf "$f" "$BIN/$(basename "$f")" && n=$((n + 1))
+  done
+  echo "sessionview: linked $n tools into $BIN"
+fi
+
+echo "requirements:"
+# tmux >= 3.7 - version compare on the numeric part only (3.7c -> 3.7)
+if command -v tmux >/dev/null 2>&1; then
+  v="$(tmux -V 2>/dev/null | sed 's/^tmux //; s/[^0-9.].*$//')"
+  if [ "$(printf '%s\n3.7\n' "$v" | sort -t. -k1,1n -k2,2n | head -1)" = "3.7" ]; then
+    say PASS "tmux $v"
+  else
+    fail "tmux $v is below 3.7 - brew upgrade tmux (an older tmux satisfies 'brew install' silently)"
+  fi
+else
+  fail "tmux - brew install tmux"
+fi
+# python >= 3.11. PY_CEILING is one past the newest Python sessionview is tested
+# on (the `<3.15` of requires-python in pyproject.toml). lib/python.sh tries a bare
+# python3 last, and that one may be newer: a WARN, never a refusal.
+PY_CEILING="3, 15"
+. "$SESSIONVIEW_ROOT/lib/python.sh"
+if [ -n "${SESSIONVIEW_PYTHON:-}" ]; then
+  pv="$("$SESSIONVIEW_PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+  if "$SESSIONVIEW_PYTHON" -c "import sys; sys.exit(sys.version_info[:2] < ($PY_CEILING))" 2>/dev/null; then
+    say WARN "python $pv ($SESSIONVIEW_PYTHON) is newer than sessionview is tested on (3.11 to 3.14) - brew install python@3.14, or: uv python install 3.14"
+  else
+    say PASS "python $pv ($SESSIONVIEW_PYTHON)"
+  fi
+else
+  fail "python 3.11 or newer - brew install python@3.14, or: uv python install 3.14 (macOS ships 3.9)"
+fi
+# session (sessiontools) - agent rows and Start an agent; mail is sessionmail's message
+if command -v session >/dev/null 2>&1; then say PASS "session on PATH"
+else say WARN "session not on PATH - the sidebar lists tmux sessions without it, but no agent rows, so no agent menu (Message, Settle, ...), and no 'Start an agent' (uv tool install sessiontools)"; fi
+# neomutt - the messages tab (bin/sessionview-messages runs `neomutt -R`, exit 2 without
+# it). MISSING, not WARN: sessionview needs NeoMutt.
+if command -v neomutt >/dev/null 2>&1; then
+  nv="$(neomutt -v 2>/dev/null | sed -n 's/^NeoMutt \([0-9]*\).*/\1/p' | head -1)"
+  if neomutt -v 2>/dev/null | grep -q '+notmuch'; then say PASS "neomutt ${nv:-?} with notmuch"
+  else say WARN "neomutt ${nv:-?} built without notmuch - the messages tab opens, with no sidebar (brew install neomutt)"; fi
+else
+  fail "neomutt - brew install neomutt (the messages tab)"
+fi
+# notmuch - the messages tab's sidebar queries Type: and Project:; unindexed, the Asks
+# rows are every mail to NAME+ask, with no error
+if command -v notmuch >/dev/null 2>&1; then
+  if [ "$(notmuch config get index.header.Type 2>/dev/null)" = Type ] &&
+     [ "$(notmuch config get index.header.Project 2>/dev/null)" = Project ]; then
+    say PASS "notmuch indexes Type and Project"
+  else
+    say WARN "notmuch does not index Type and Project - the Asks rows show every mail to NAME+ask:  notmuch config set index.header.Type Type; notmuch config set index.header.Project Project; notmuch reindex '*'"
+  fi
+else say WARN "notmuch not on PATH - the messages tab has no sidebar (brew install notmuch)"; fi
+# optional
+command -v tm >/dev/null 2>&1        && say PASS "tm (optional)"        || say "-" "tm not installed (optional: taskmaster menu items)"
+# PATH
+[ -n "$PACKAGED" ] || case ":$PATH:" in
+  *":$BIN:"*) say PASS "$BIN is on PATH";;
+  *) say WARN "$BIN is not on PATH - add to your shell rc:  export PATH=\"$BIN:\$PATH\""; ;;
+esac
+echo
+if [ "$rc" -eq 0 ]; then
+  echo "ready: open a NEW terminal and run  sessionview"
+else
+  echo "not ready: fix the MISSING lines above, then run this again"
+fi
+exit "$rc"

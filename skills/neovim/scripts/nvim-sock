@@ -1,0 +1,20 @@
+#!/bin/sh
+# nvim-sock [-L SOCK] PANE - the listen socket of the nvim in a tmux pane.
+# sessionview-session starts nvim with --listen $TMPDIR/nvim-show-pane-<pane_id>
+# (show-me's convention); any nvim started by hand can be found through
+# its command line (--listen PATH) or $NVIM_LISTEN_ADDRESS. Prints the path.
+set -eu
+L=""; if [ "${1:-}" = "-L" ]; then L="-L $2"; shift 2; fi
+P="${1:?pane}"
+# shellcheck disable=SC2086
+ID="$(tmux $L display -p -t "$P" '#{pane_id}')"
+# shellcheck disable=SC2086
+PID="$(tmux $L display -p -t "$P" '#{pane_pid}')"
+S="${TMPDIR:-/tmp}/nvim-show-pane-$ID"
+[ -S "$S" ] && { echo "$S"; exit 0; }
+# a hand-started nvim: read --listen off the process tree under the pane
+for pid in $(pgrep -P "$PID" 2>/dev/null) "$PID"; do
+  a="$(ps -o command= -p "$pid" 2>/dev/null | sed -n 's/.*--listen \([^ ]*\).*/\1/p')"
+  [ -n "$a" ] && [ -S "$a" ] && { echo "$a"; exit 0; }
+done
+echo "nvim-sock: no nvim socket for pane $P" >&2; exit 2

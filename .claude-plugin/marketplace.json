@@ -1,0 +1,21 @@
+{
+  "name": "sessionview",
+  "metadata": {
+    "description": "Self-hosting marketplace for the sessionview plugin - add this repo's clone or URL with `claude plugin marketplace add`."
+  },
+  "owner": {
+    "name": "Mike Bailey",
+    "email": "mike@sessionkit.ai"
+  },
+  "plugins": [
+    {
+      "name": "sessionview",
+      "description": "A sidebar for tmux: your projects (sessions) and your agents (seats), here and on remote hosts. Skills that let an agent drive tmux, lazygit, neovim and a Claude Code pane safely, simply, and without reading the whole screen.",
+      "author": {
+        "name": "Mike Bailey",
+        "email": "mike@sessionkit.ai"
+      },
+      "source": "./"
+    }
+  ]
+}

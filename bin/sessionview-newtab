@@ -1,0 +1,67 @@
+#!/bin/bash
+# sessionview-newtab — the [+] in the sessionview tab bar, as in herdr: plus
+# opens a new tab and you type its name, which replaces the number; the box
+# pops up in the middle of the screen the way herdr's does.
+#   sessionview-newtab --popup DIR      run INSIDE tmux display-popup: the new-tab PICKER
+#   sessionview-newtab NAME DIR         create the window (empty NAME = unnamed, shows by number)
+#
+# The popup is the sidebar's own type-and-filter
+# (`tmux-sidebar --pick windows SESSION`): the configured windows for this
+# session listed, typing narrows, enter opens the highlighted one or a plain
+# tab of the typed name. The + at the top for a new tab brings up that same
+# picker, and it appears in the main pane. The bare
+# name box below stays as the fallback when there is no python3.
+#
+# The window goes into the session the popup BELONGS TO, named explicitly: tmux
+# writes that session's id into the popup's $TMUX (socket,pid,session-id). Without
+# a target, `tmux new-window` from inside a popup asks tmux for "the current
+# session" and tmux answers from $TMUX_PANE -- which a popup inherits from the
+# SERVER'S global environment, i.e. from whatever shell first started that server.
+# A store's server (tm-store-NAME) was started from a pane on main and carried
+# TMUX_PANE=%0; on the
+# store server %0 is work:0, so every + on demo or another session minted its tab
+# in work while the client sat on demo (measured live with a 5 Hz watch on
+# the client;
+# reproduced on a throwaway server: clean global env -> demo, TMUX_PANE=%0 in
+# the global env -> work). The tab's DIRECTORY went the same way: display-popup
+# does NOT expand formats in its shell command (measured: '#{pane_current_path}'
+# arrives literal), so `new-window -c` expanded it itself, against the same poisoned
+# target. Now the directory is the target session's current pane, read at Enter.
+# A popup is not a pane: its TMUX_PANE is never meaningful here and is dropped.
+SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+unset TMUX_PANE
+if [ "$1" = "--popup" ]; then
+  D="${2:-$HOME}"; N=""
+  SID="${TMUX##*,}"; S=""
+  if [ -n "$TMUX" ] && [ "$SID" != "$TMUX" ]; then
+    S="$(tmux display-message -p -t "\$$SID:" '#{session_name}' 2>/dev/null || true)"
+  fi
+  # The picker is Python 3.11+: gate on the probe (lib/python.sh), never on a
+  # bare python3, which is Apple's 3.9 on a stranger's Mac.
+  . "$SESSIONVIEW_ROOT/lib/python.sh"
+  if [ -n "$S" ] && [ -n "${SESSIONVIEW_PYTHON:-}" ]; then
+    exec "$SESSIONVIEW_ROOT/bin/tmux-sidebar" --pick windows "$S"
+  fi
+  printf '\033[1m new tab\033[0m\n\n'
+  printf ' \033[7m %-38s\033[0m\r \033[7m ' ""      # herdr's grey input bar
+  while IFS= read -rsn1 c; do                          # esc = cancel, enter = save, backspace works
+    case "$c" in
+      $'\e') printf '\n'; exit 1 ;;
+      '')    break ;;
+      $'\x7f'|$'\b') [ -n "$N" ] && { N="${N%?}"; printf '\b \b'; } ;;
+      *)     N="$N$c"; printf '%s' "$c" ;;
+    esac
+  done
+  exec "$0" "$N" "$D"
+fi
+N="$1"; D="${2:-$HOME}"
+SID="${TMUX##*,}"                        # the popup's own session id, from tmux itself
+if [ -n "$TMUX" ] && [ "$SID" != "$TMUX" ] && tmux has-session -t "\$$SID" 2>/dev/null; then
+  # an explicit -t is immune to $TMUX_PANE; the click-time DIR is the fallback
+  D="$(tmux display-message -p -t "\$$SID:" '#{pane_current_path}' 2>/dev/null || true)"; D="${D:-${2:-$HOME}}"
+  set -- new-window -t "\$$SID:" -c "$D"
+else
+  set -- new-window -c "$D"
+fi
+[ -n "$N" ] && set -- "$@" -n "$N"
+exec tmux "$@"

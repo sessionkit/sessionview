@@ -1,0 +1,8 @@
+#!/bin/sh
+# tmux-peek [-L SOCK] PANE [N] - the last N lines (default 20) of a pane.
+# Bounded on purpose: reading a whole window costs context you do not need.
+set -eu
+L=""; if [ "${1:-}" = "-L" ]; then L="-L $2"; shift 2; fi
+P="${1:?pane}"; N="${2:-20}"
+# shellcheck disable=SC2086
+tmux $L capture-pane -p -t "$P" -S "-$N" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'

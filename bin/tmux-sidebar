@@ -1,0 +1,3354 @@
+#!/bin/sh
+''':'
+# Started by sh: re-run this file with a Python 3.11 or newer. The rest of
+# the file is Python; to Python, these lines are one string.
+[ -n "${SESSIONVIEW_PYTHON:-}" ] && exec "$SESSIONVIEW_PYTHON" "$0" "$@"
+# >>> venv probe: the venv that installed this copy, before PATH.
+# Only for a wheel copy (site-packages/sessionview/_data); a checkout never
+# matches, so it keeps the PATH order below. Same text in all four probe
+# copies (lib/python.sh and the three trampolines); tests/test_venv_probe.py
+# holds them equal.
+if [ -z "${SESSIONVIEW_PYTHON:-}" ]; then
+  _sv_v="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  case "$_sv_v" in
+    */site-packages/sessionview/_data/*)
+      _sv_v="$(cd "$(dirname "$_sv_v")" 2>/dev/null && pwd -P)"
+      while [ -n "$_sv_v" ] && [ "$_sv_v" != / ] && [ ! -f "$_sv_v/pyvenv.cfg" ]; do
+        _sv_v="$(dirname "$_sv_v")"
+      done
+      if [ -n "$_sv_v" ] && [ -f "$_sv_v/pyvenv.cfg" ] && [ -x "$_sv_v/bin/python3" ] &&
+          "$_sv_v/bin/python3" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+        SESSIONVIEW_PYTHON="$_sv_v/bin/python3"; export SESSIONVIEW_PYTHON
+      fi ;;
+  esac
+  unset _sv_v
+fi
+# <<< venv probe
+[ -n "${SESSIONVIEW_PYTHON:-}" ] && exec "$SESSIONVIEW_PYTHON" "$0" "$@"
+for p in python3.14 python3.13 python3.12 python3.11 python3; do
+  command -v "$p" >/dev/null 2>&1 || continue
+  "$p" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null && exec "$p" "$0" "$@"
+done
+echo "sessionview: needs Python 3.11 or newer and found none on PATH (macOS ships 3.9)." >&2
+echo "  brew install python@3.14   or   uv python install 3.14" >&2
+exit 1
+':'''
+__doc__ = """tmux-sidebar — herdr-style sidebar for tmux.
+
+Layout:
+
+    default ⋯               <- the taskmaster STORE. Its name -> that store's
+                               own session and store view; the ⋯ ->
+                               the "Switch store" modal; right-click -> Kick.
+                               There is no "spaces" heading.
+    · main  master [⇡3 !2]  <- PROJECTS: one tmux session per project.
+    ○ voicemode  master        ONE line each: name, branch, git status as a
+                               shell prompt spells it (two lines waste
+                               space; project_two_line = true for herdr's).
+
+    new              menu   <- directly above agents
+    agents        grouped   <- agents live in the BOTTOM half, projects the top
+    ● alice-3b · foobarty   <- one line, nothing on the right, so it never
+                               wraps (agent_two_line = true adds herdr's
+                               "claude · 34s" line)
+
+                       «
+
+Styling is copied from herdr, not invented: the palette below was sampled by
+region histogram from a screenshot of herdr's own window.
+The selection tell is the TEXT going bright, NOT a bright background band.
+
+Clickable when the terminal reports mouse: click a project -> switch-client;
+click an agent -> switch and focus its pane, on whichever store's server it
+lives (the VIEW follows the agent); click the store name -> that store's own
+session and its store view; click the store row's ⋯ (or press s) ->
+the "Switch store" modal, an overlay menu over the unchanged sidebar, whose
+pick opens that store exactly as its name does; right-click the store row ->
+its menu (Kick, the general contractor); right-click a project -> its menu.
+Refreshes every 2s.
+
+Behaviour:
+  - a project's BRANCH shows only when it is NOT the repo's default branch
+      (origin/HEAD, else PROJECT.md `contributing:` naming a real ref, else
+      master/main), so a column of identical default branches stays blank
+      and only an unexpected branch stands out. {branch_raw} and {default} stay
+      available to a format that wants them regardless.
+  - the selected row is BRIGHTER AND BOLD (selected_fg / selected_bold in
+      sidebar.toml), so the selection is easy to see.
+  - the agent glyph ALSO in the tab bar: this loop writes each window's
+      rollup into the window options @sessionview_glyph / @sessionview_glyph_fg and
+      frame.conf reads them, so state shows where the eye already is. SIGHUP = clean
+      reload (same as q), so an edit can be picked up without a keypress.
+  --popup: run inside `tmux display-popup -E` (prefix H in frame.conf): the
+      same sidebar as an overlay in ANY tmux client, and a click that jumps
+      also closes it. switch-client moves the whole client, so an
+      in-session sidebar pane gets left behind; the popup does not.
+  - "new" opens a SESSION, not a tab: a picker of taskmaster projects, most
+      recently opened first (store project-dir mtime, or the recent.tsv
+      line sessionview-session appends), typing filters, enter takes the typed name
+      or the highlighted row (up/down move it); an open session is
+      marked and a click jumps to it.
+      The session itself -- repo/git/project/tasks tabs -- is
+      bin/sessionview-session's job; the sidebar only calls it.
+  - ONE picker: the new-session box is generic
+      (open_picker) and has three sources - new session, NEW TAB (the
+      configured `windows` that apply to that session, from sessionview-session
+      --list-windows; project menu > New tab, and the tab bar's "+" via
+      `--pick windows` in a popup, over the main pane), and START AN AGENT
+      (the + under agents and the menu's Start an agent: `session start
+      --list-agents`, `pinned_agents` first, so a few typed letters and
+      enter start one).
+  - SMART MENUS, PLUGGABLE: a right-click menu is
+      BUILT from manifests -- the builtin one below plus every
+      <repo>/plugins/NAME/plugin.toml (SESSIONVIEW_PLUGINS= overrides).
+      Copied from herdr's plugin contract, not invented. An action names its
+      contexts (agent | project), a `when` field of the context that must be
+      truthy (else GREYED: exists, not applicable), and ONE command as argv
+      with {agent.name}-style placeholders filled from the row -- no shell
+      ever sees the text. A plugin whose `requires` (commands on PATH,
+      or paths) are missing contributes NOTHING (hidden). Optional:
+      prompt = "label" (typed text -> {input} / {input_subject}), confirm =
+      "text" (y/n first), body = "text" (0600 file, its path is {body}).
+      Multi-step work ships a script in the plugin dir ("./name"). The
+      split: session owns the agent verbs, voicemode adds speak,
+      taskmaster keeps project things.
+  - REMOTES: remote sessions show in the sidebar and connect
+      seamlessly, with ssh as the network transport: sidebar.toml
+      `remotes = ["devbox"]`. A daemon
+      thread per host runs ONE ssh call every remote_refresh seconds --
+      `session list --json` + tmux list-panes + list-sessions -- through an
+      ssh control socket (~/.local/state/sessionview/ssh-cm-*; measured: 11.5s cold,
+      0.35s warm), so the 2s render never waits on the network. Remote
+      projects sit under a host line after the local ones; remote seats join
+      the agent list with " @host" on the row. A click opens (or raises) a
+      local tab "host:session" running `ssh -t host tmux attach`, an agent
+      click also selects its window/pane there first. Mail/speak items are
+      GREYED for remote seats in v1 (the cross-host address form is not
+      settled); Jump to is the one live item.
+  - GROUPED keeps a group together. Groups once interleaved (catalog, alpha,
+    beta, catalog, gamma) because the sort was rank-then-idle with no group
+    key. Grouped now sorts by group first (in project-list order), rank within.
+  - "all | current" on the agents heading: current = the agents of the
+    selected project, so a click on catalog up top shows catalog's agents
+    below, and how many there are. Default all.
+  - OVERFLOW: the agents block starts at half height only when that fits;
+    otherwise it creeps UP into the spare rows under the projects, and if it
+    still cannot fit, the last row says "+N more" instead of silently
+    dropping them.
+"""
+import json, os, re, select, shlex, shutil, signal, subprocess, sys, termios, threading, time, tomllib, tty, unicodedata
+
+# ---- where sessionview lives (its own lean repo: a working reference
+# implementation) ---------------------------------------------------------------
+# SESSIONVIEW_ROOT = the checkout (this file is bin/tmux-sidebar in it); SESSIONVIEW_STATE =
+# runtime state outside the checkout (pins, recency, mail bodies, ssh sockets,
+# evidence logs). Config: bin/sessionview-config (config/config.json template ->
+# the home file (`sessionview-config path`) -> store/project .sessionview, JSON).
+SESSIONVIEW_ROOT = os.environ.get("SESSIONVIEW_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SESSIONVIEW_STATE = os.path.expanduser(os.environ.get("SESSIONVIEW_STATE", "~/.local/state/sessionview"))
+def _migrate_state():
+    """Move the state dir from its pre-release name, as lib/state.sh does."""
+    old = os.path.expanduser("~/.local/state/herd")
+    if (SESSIONVIEW_STATE == os.path.expanduser("~/.local/state/sessionview")
+            and not os.path.exists(SESSIONVIEW_STATE) and os.path.isdir(old)):
+        try:
+            os.rename(old, SESSIONVIEW_STATE)
+            for a, b in (("herd-recent.tsv", "recent.tsv"), ("herd.tty", "frame.tty")):
+                if os.path.exists(os.path.join(SESSIONVIEW_STATE, a)):
+                    os.rename(os.path.join(SESSIONVIEW_STATE, a), os.path.join(SESSIONVIEW_STATE, b))
+        except OSError:
+            pass
+_migrate_state()
+os.makedirs(SESSIONVIEW_STATE, exist_ok=True)
+def state(name): return os.path.join(SESSIONVIEW_STATE, name)
+
+def log_err(where, text):
+    """ONE log for everything that goes wrong: ~/.local/state/sessionview/sessionview.log,
+    every error in a single log. A
+    line a person can read: time, socket, where, what. Never raises."""
+    try:
+        with open(state("sessionview.log"), "a") as lg:
+            lg.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} sock={SOCK} {where}: {text}\n")
+    except Exception:
+        pass
+
+def run_checked(cmd, where):
+    """subprocess.run that LOGS a non-zero exit with its stderr instead of
+    swallowing it; returns the CompletedProcess. The + popup's new-window
+    once failed for an hour with nothing written anywhere."""
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        log_err(where, f"rc {r.returncode}: {' '.join(cmd)} :: {(r.stderr or r.stdout).strip()}")
+    return r
+
+# ---- palette: sampled from herdr's own window, do not invent ----------------
+def fg(h): return f"\033[38;2;{int(h[1:3],16)};{int(h[3:5],16)};{int(h[5:7],16)}m"
+def bg(h): return f"\033[48;2;{int(h[1:3],16)};{int(h[3:5],16)};{int(h[5:7],16)}m"
+BG        = bg("#21252e")   # sidebar and pane are the SAME colour, no divider
+BG_SEL    = bg("#1e1f2d")   # barely darker; the highlight is the text, not this
+C_NAME    = fg("#a6aec7")   # a resting row's name
+C_SEL     = fg("#ced7f2")   # the selected row's name
+C_BRANCH  = fg("#c9a9f4")   # the selected row's second line (lavender)
+C_DIM     = fg("#6c7185")   # headings, branch, new/menu, chevron
+C_DIMMER  = fg("#474b59")   # an agent's second line
+RESET     = "\033[0m"
+# "Back to the default text" INSIDE the sidebar is the sidebar's own resting
+# colour, never the TERMINAL's default fg (\033[39m): that is white in a
+# dark-mode terminal and BLACK in a light-mode one, on our fixed dark
+# background. Every agent row is glyph + NOFG + name, so the names were
+# painted in the terminal's colour all along - white in a dark-mode terminal
+# (never the palette grey), black-on-dark in a light-mode one: flipping the
+# system appearance flips the names.
+NOFG      = C_NAME          # fg back to resting text, the row's background untouched
+
+# ---- config: the home file via bin/sessionview-config (JSON everywhere) ----
+# Every display decision lives in config, none in code, so the view can be
+# iterated without touching code. No hidden
+# defaults: the TEMPLATE
+# config/config.json holds every key; the home file (`sessionview-config path`)
+# is made from it on first read; store and project `.sessionview` files layer
+# on top. Keys
+# are documented in config/README.md. Only the fields a format mentions are
+# REQUESTED from `session list` (recap/context cost a transcript read each),
+# so what is requested follows what is shown.
+#
+# ONE TAB in any format string = "right-align everything after me". That is
+# how herdr's paired labels are spelt: "new\tmenu", "agents\tgrouped".
+# When `sessionview-config dump` fails (the home file still at the old home,
+# a broken layer), the sidebar still runs: on the shipped TEMPLATE alone, so
+# every key it reads exists, and CFG_ERROR - the tool's own stderr - is shown
+# as a note in the sidebar on start, never only on a stderr nobody sees.
+# A dump that WORKS may still warn (an old home file left beside the new
+# one): its `warning:` line becomes the same note, CFG_ERROR left empty.
+CFG_ERROR = ""
+CFG_WARN = ""
+def load_config():
+    global CFG_ERROR, CFG_WARN
+    try:
+        r = subprocess.run([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config"), "dump"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip() or f"exit {r.returncode}")
+        CFG_WARN = next((l for l in r.stderr.splitlines()
+                         if l.startswith("sessionview-config: warning:")), "")
+        cfg = json.loads(r.stdout)
+    except Exception as e:
+        CFG_ERROR = str(e)
+        print(f"sidebar: sessionview-config: {e}", file=sys.stderr)
+        try:
+            with open(os.path.join(SESSIONVIEW_ROOT, "config", "config.json")) as f:
+                cfg = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+        except Exception:
+            cfg = {}
+        for k, v in {"width": 34, "refresh": 2, "agent_format": " {glyph} {name}",
+                     "project_format": " {name}"}.items():
+            cfg.setdefault(k, v)
+    if os.environ.get("SIDEBAR_WIDTH"):
+        cfg["width"] = int(os.environ["SIDEBAR_WIDTH"])
+    if os.environ.get("SIDEBAR_REFRESH"):
+        cfg["refresh"] = float(os.environ["SIDEBAR_REFRESH"])
+    return cfg
+CFG = load_config()
+def wants_context(fmt):
+    """A format that shows context, or the model (the scan is where the model
+    id comes from), pays the transcript read; nothing else does."""
+    return "context" in fmt or "{ctx" in fmt or "{model" in fmt
+
+C_SEL = fg(CFG.get("selected_fg", "#ced7f2"))       # config overrides the sampled value above
+SEL_ON = C_SEL + ("\033[1m" if CFG.get("selected_bold", True) else "")
+SEL_OFF = "\033[22m" + NOFG
+def paint(text, selected):
+    """A project/agent row: bright+bold when selected, resting grey otherwise.
+    A selected row re-asserts ITS colour after every inline glyph (each ends
+    in NOFG = resting), so the name after the glyph is bright, not grey."""
+    return (SEL_ON + text.replace(NOFG, SEL_ON) + SEL_OFF) if selected else (C_NAME + text + NOFG)
+WIDTH = int(CFG["width"])
+REFRESH = float(CFG["refresh"])
+GLYPH = {"busy": fg("#f9e2af") + "◐" + NOFG, "idle": fg("#a6e3a1") + "●" + NOFG,
+         "shell": C_DIM + "○" + NOFG,        "blocked": fg("#f38ba8") + "■" + NOFG,
+         "waiting": fg("#f38ba8") + "■" + NOFG}
+RANK = {"blocked": 0, "waiting": 0, "busy": 1, "idle": 2, "shell": 3}
+MOUSE_RE = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([mM])")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+POPUP = "--popup" in sys.argv   # inside `tmux display-popup -E`: a jump closes us
+PICKER = None            # the ONE type-and-filter box (new session / new tab / start an agent); see open_picker
+GROUPED = CFG.get("group_by", "none") != "none"
+FILTER = "all"           # all | current  (the agents of the selected project)
+MENU = None              # the project menu, drawn IN the sidebar (see project_menu)
+PROMPT = None            # an inline text/confirm line, drawn IN the sidebar
+# The row a menu opens beside, so a menu appears close to the row that
+# opened it. The mouse loop
+# sets ANCHOR to the clicked row's index for the length of one click;
+# build_menu / switch_store_menu stamp it on MENU as "anchor", menu_pick
+# carries it to a prompt the menu opens, and overlay() draws the box from the
+# row below it (or ending on the row above). None = no row: centred, as before.
+ANCHOR = None
+LAST_TARGETS = {}        # render_base's last targets: where the store row is, for `s`
+def attached_socket():
+    """The tmux server this sidebar is attached to, by $TMUX's socket path;
+    the plain socket is named `default`. sessionview starts on the store whose
+    server it sits in, not on a hard-coded one: a sessionview running inside
+    a store's server (tm-store-NAME) once had SOCK saying "default"."""
+    path = os.environ.get("TMUX", "").split(",")[0]
+    here = os.path.basename(path) if path else ""
+    # A POPUP (--pick, from the tab bar's +) acts on the server it was opened
+    # on - $TMUX's, always. SESSIONVIEW_VIEW_SOCK is the FRAME's export and it leaks
+    # into every server booted from inside the frame: a store server's global
+    # env said SESSIONVIEW_VIEW_SOCK=default (measured), so a +
+    # in that store made its tab on the DEFAULT server, where its session
+    # does not exist, and nothing appeared. A store whose
+    # sessions ARE on default worked, which hid it.
+    if "--pick" in sys.argv and here:
+        return here
+    if os.environ.get("SESSIONVIEW_VIEW_SOCK"):     # sessionview-frame: we sit in the outer
+        return os.environ["SESSIONVIEW_VIEW_SOCK"]  # server; view the inner one
+    return here or "default"
+
+SOCK = attached_socket()  # the tmux server the PROJECTS come from; a store pick
+                          # changes this and nothing else (a VIEW, never
+                          # `tm store switch`, which only prints an export line)
+
+def sh(cmd):
+    """Run a command and return its stdout - and treat a MISSING BINARY as an
+    empty answer, never a traceback.
+
+    The sidebar must paint for someone who has neither `session` nor `tm`:
+    without taskmaster it falls back to the directory name, and the installer
+    reports a missing `session` as WARN, not MISSING. Both promises were
+    false: `subprocess.run` raises FileNotFoundError before any caller's
+    `except json.JSONDecodeError` can help, so `projects()` (tm) and
+    `agents()` (session) killed the whole sidebar on first render. Measured
+    on a new user's machine - their first five minutes with
+    sessionview - and reproduced.
+    """
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True).stdout
+    except (FileNotFoundError, PermissionError):
+        return ""
+
+def tmx(*args):
+    """tmux on the viewed store's server. -L is ALWAYS passed: `-L default`
+    is the plain socket by name, while no -L at all means "the server in
+    $TMUX" - so a "default" pick from inside a store's server showed that
+    store's sessions and the picker filtered nothing: no filtering on
+    store."""
+    return ["tmux", "-L", SOCK] + list(args)
+
+# ---- geometry helpers -------------------------------------------------------
+def cells(ch):
+    """Terminal columns one character takes: 2 for East Asian Wide/Fullwidth
+    (emoji like the ready badge 🥚 and 💥), 0 for combining marks, ZWJ and
+    variation selectors, else 1. NOT covered: a narrow base made wide by
+    VS16 (⚠️ = U+26A0 U+FE0F) counts 1, and most terminals draw it as 2 -
+    none is in the sidebar today. len() counted 🎁 as one, so a row carrying
+    it overran the bar by a column (found adding the
+    ready badge)."""
+    o = ord(ch)
+    if o == 0x200D or 0xFE00 <= o <= 0xFE0F or unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+def vislen(s):
+    return sum(cells(c) for c in ANSI_RE.sub("", s))
+
+_NEED = {"now": 0, "last": 0, "shrink": 0,   # the widest NATURAL row this render / last render
+         "left_now": 0, "left_last": 0}       # ... and its LEFT half only: the names-only width (fit: focus)
+FOCUS = {"in": True, "pin": False}   # fit: focus - is the bar focused; is wide pinned by the chevron
+
+NEED_LOG = os.environ.get("SIDEBAR_NEED_LOG", "")   # measurement hook: every row's natural width, appended
+SELECT_AGENT = os.environ.get("SIDEBAR_SELECT_AGENT", "")   # measurement hook: treat this agent's row as selected (a scratch server has no current pane of ours)
+SELECT_SESSION = os.environ.get("SIDEBAR_SELECT_SESSION", "")   # measurement hook: treat this project's row as selected
+
+def need(n, spec=""):
+    """Record how wide a row WANTED to be, before any clipping (fit: auto).
+    Called from lay() ONLY - the one place a row's natural width is known.
+    It was in clip() too, briefly: row() clips the
+    already-PADDED line, so every render "needed" the current width, the
+    wish grew by one per redraw, and the bar climbed 34 -> 50 -> the cap
+    (measured)."""
+    if n > _NEED["now"]:
+        _NEED["now"] = n
+    if NEED_LOG:
+        with open(NEED_LOG, "a") as f:
+            f.write("%d\t%s\n" % (n, ANSI_RE.sub("", spec).replace("\t", " | ")))
+
+def lay(spec, width, chrome=False, keep_right=False):
+    """Render one format string. A single TAB right-aligns its remainder.
+    chrome=True: this row is the sidebar's own furniture (headings, the
+    new/menu row, the control strip) and never sizes the bar: the sidebar's
+    own chrome never changes the width; only the user's choices do. (The agents
+    heading grew four columns whenever `all` became `current`.)"""
+    if "\t" in spec:
+        left, right = spec.split("\t", 1)
+        if not chrome:
+            need(vislen(left) + 1 + vislen(right), spec)
+            _NEED["left_now"] = max(_NEED["left_now"], vislen(left))
+        pad = width - vislen(left) - vislen(right)
+        if pad < 1:
+            # keep_right (a project row): the right side is the badge, and a
+            # long branch on the left pushed it off the row, so the badge
+            # could not be seen and the words ran off the screen.
+            # The left gives way, with an ellipsis, while it can
+            # keep the glyph and a few letters; below that, the old rule.
+            room = width - vislen(right) - 1
+            if keep_right and vislen(right.strip()) and room >= 6:
+                return clip(left, room - 1) + NOFG + "\u2026" + " " + right
+            if keep_right and width >= 6:   # nothing to keep: still say it was cut
+                return clip(left, width - 1) + NOFG + "\u2026"
+            return clip(left, width)    # no room: drop the right-hand label
+        return left + " " * pad + right
+    if not chrome:
+        need(vislen(spec), spec)
+        _NEED["left_now"] = max(_NEED["left_now"], vislen(spec))
+    return clip(spec, width)
+
+def clip(s, width):
+    """Truncate to `width` VISIBLE columns, keeping escape sequences intact."""
+    if vislen(s) <= width:
+        return s
+    out, n, i = [], 0, 0
+    while i < len(s) and n < width:
+        m = ANSI_RE.match(s, i)
+        if m:
+            out.append(m.group(0)); i = m.end(); continue
+        w = cells(s[i])
+        if n + w > width:               # a wide glyph that would straddle the edge
+            break
+        out.append(s[i]); n += w; i += 1
+    return "".join(out)
+
+def row(text, selected=False):
+    """Pad to the full sidebar width and paint the background under it."""
+    text = clip(text, WIDTH)
+    return (BG_SEL if selected else BG) + text + " " * (WIDTH - vislen(text)) + RESET
+
+# ---- data -------------------------------------------------------------------
+def panes(sock=None):
+    """[(pane_id, session, window_name, window_active, pane_active, path, window_index, pane_pid)]
+    of the VIEWED server, or of SOCK when named (-L explicit either way)."""
+    out = sh(["tmux", "-L", sock or SOCK, "list-panes", "-a", "-F",
+              "#{pane_id}\t#{session_name}\t#{window_name}\t"
+              "#{window_active}\t#{pane_active}\t#{pane_current_path}\t#{window_index}\t#{pane_pid}"])
+    return [l.split("\t") for l in out.splitlines() if l.count("\t") == 7]
+
+def ppids():
+    """{pid: ppid} for every process, one ps call per render."""
+    d = {}
+    for l in sh(["ps", "-axo", "pid=,ppid="]).splitlines():
+        t = l.split()
+        if len(t) == 2:
+            d[t[0]] = t[1]
+    return d
+
+def pane_of_pid(pid, pid2pane, parents):
+    """The pane on the VIEWED server whose shell is an ancestor of PID, else "".
+    `session list --json` says tmux_pane null for a seat on a store's server
+    (measured: two seats on a store's server, both null -- it resolves panes
+    on one server only), so a project drew no glyph while an idle agent sat
+    in it. The sidebar maps by pid ancestry itself, on
+    whichever server it is looking at."""
+    p = str(pid or "")
+    for _ in range(10):
+        if not p or p in ("0", "1"):
+            return ""
+        if p in pid2pane:
+            return pid2pane[p]
+        p = parents.get(p, "")
+    return ""
+
+def sessions():
+    out = sh(tmx("list-sessions", "-F",
+              "#{session_name}\t#{session_windows}\t#{session_attached}"))
+    return [l.split("\t") for l in out.splitlines() if l]
+
+_DEFAULT = {}
+def default_branch(top):
+    """The branch a repo LIVES on, so a project's branch is shown only when it
+    is NOT there. In order: origin/HEAD; PROJECT.md front-matter
+    `contributing:` -- but that field is a WORKFLOW word too (`branch` means
+    branch+PR, not a branch called branch), so it counts only when a ref of
+    that name exists; then master if it exists, else main, else master.
+    Cached 10 min per repo: origin/HEAD does not move by itself.
+    Measured: four repos all origin/HEAD -> master; a repo with no
+    origin/HEAD falls to master."""
+    now = time.time()
+    hit = _DEFAULT.get(top)
+    if hit and now - hit[0] < 600:
+        return hit[1]
+    def has(ref):
+        return subprocess.run(["git", "-C", top, "rev-parse", "-q", "--verify", ref],
+                              capture_output=True).returncode == 0
+    d = sh(["git", "-C", top, "symbolic-ref", "-q", "--short",
+            "refs/remotes/origin/HEAD"]).strip()
+    d = d.split("/", 1)[1] if d.startswith("origin/") else d
+    if not d:
+        try:
+            with open(os.path.join(top, "PROJECT.md")) as fh:
+                head = fh.read(4096)
+            m = re.search(r"^contributing:\s*([^\s#]+)", head, re.M)
+            v = m.group(1).strip("\"'") if m else ""
+            if v and (has(f"refs/heads/{v}") or has(f"refs/remotes/origin/{v}")):
+                d = v
+        except OSError:
+            pass
+    if not d:
+        d = "master" if has("refs/heads/master") else \
+            "main" if has("refs/heads/main") else "master"
+    _DEFAULT[top] = (now, d)
+    return d
+
+_GIT = {}
+C_BR   = fg("#a6e3a1")   # branch: the starship git_branch style is bold green
+C_ST   = fg("#f38ba8")   # status: the starship git_status style is bold red
+def git_where(path):
+    """(repo, branch, status, branch_raw, default) for a directory, cached 30s.
+    `branch` is styled and EMPTY when the repo is on its default branch;
+    branch_raw is always the name, default is default_branch(). ONE git call
+    (status --porcelain=v2 --branch). The status string is spelt the way a
+    starship prompt spells it (~/.config/starship.toml [git_status]): ⇡ahead ⇣behind
+    +staged !modified ?untracked ✘deleted 💥conflicted, in brackets, or ""
+    when clean: icons, with arrows up and down for ahead and behind."""
+    now = time.time()
+    hit = _GIT.get(path)
+    if hit and now - hit[0] < 30:
+        return hit[1]
+    out = sh(["git", "-C", path, "status", "--porcelain=v2", "--branch"])
+    top = sh(["git", "-C", path, "rev-parse", "--show-toplevel"]).strip()
+    branch, ahead, behind = "", 0, 0
+    conflicted = 0
+    for l in out.splitlines():
+        if l.startswith("# branch.head "):
+            branch = l[14:]
+        elif l.startswith("# branch.ab "):
+            a, b = l[12:].split()
+            ahead, behind = int(a), -int(b)
+        elif l.startswith("u "):
+            conflicted += 1
+    # As VS Code's git status summary shows it: no brackets, the working
+    # tree rolled into ONE bare number of uncommitted changes (a path counts
+    # once), nothing when clean. Kept: ⇡ahead ⇣behind and
+    # 💥conflicts, which are not "changes".
+    changed = sum(1 for l in out.splitlines() if l[:2] in ("1 ", "2 ", "? ", "u "))
+    bits = []
+    if conflicted: bits.append(f"💥{conflicted}")
+    if ahead:      bits.append(f"⇡{ahead}")
+    if behind:     bits.append(f"⇣{behind}")
+    if changed:    bits.append(str(changed))
+    status = (C_ST + " ".join(bits) + NOFG) if bits else ""
+    repo = os.path.basename(top) if top else os.path.basename(path)
+    default = default_branch(top) if top else ""
+    shown = branch if branch and branch != default else ""      # only off the default branch
+    val = (repo, (C_BR + shown + NOFG) if shown else "", status, branch, default)
+    _GIT[path] = (now, val)
+    return val
+
+_READY = {}
+def ready_where(path, default):
+    """(field, n): the project's unmerged ready tags - `ready/*` and `egg/*`
+    not yet merged into its default branch - as the {ready} format field, and the
+    count (None = could not tell). The field is ready_format with {n} and
+    {glyph} (ready_glyph) filled, or "" when there are none. Counted the way
+    `git ready list` counts (for-each-ref --no-merged), against
+    origin/<default> first, else the local default branch (no remote-tracking
+    ref); a branch tagged under both prefixes counts once; when neither
+    resolves the count is "?" - a silent "" would read exactly like "nothing ready".
+    Cached 30s like git_where; no git, no default, or
+    not a repo is "".
+    The badge sits on the right of the project's row: ready tags are
+    Easter eggs to go and hunt for, shown as a small emoji with the count
+    to its left, so the emoji line up down the column."""
+    now = time.time()
+    hit = _READY.get((path, default))
+    if hit and now - hit[0] < 30:
+        return hit[1]
+    n = 0
+    if default:
+        n = None
+        for base in (f"refs/remotes/origin/{default}", f"refs/heads/{default}"):
+            try:
+                r = subprocess.run(["git", "-C", path, "for-each-ref", f"--no-merged={base}",
+                                    "--format=%(refname)", "refs/tags/ready/", "refs/tags/egg/"],
+                                   capture_output=True, text=True)
+            except (FileNotFoundError, PermissionError):
+                n = 0
+                break
+            if r.returncode == 0:
+                n = len({l.strip().split("/", 3)[-1] for l in r.stdout.splitlines() if l.strip()})
+                break
+            if "not a git repository" in r.stderr:
+                n = 0
+                break
+    field = ""
+    if n != 0:
+        field = CFG.get("ready_format", "{n}{glyph}").format(
+            n="?" if n is None else n, glyph=CFG.get("ready_glyph", "\U0001F95A"))
+    val = (field, n)
+    _READY[(path, default)] = (now, val)
+    return val
+
+ONESHOT = False             # --once: resolve inline (main() sets it)
+_REPO = {}                  # name -> (resolved at, repo or "")
+_REPO_ASK = set()           # names a worker is resolving
+_REPO_LOCK = threading.Lock()
+def project_repo(name):
+    """The project's OWN repo, as sessionview-session resolves it (`--print`
+    is its dry run: `repo=DIR`); "" until known, or when it names none. The
+    badge counts THIS repo, not the active tab's: a project whose `project` tab
+    sits in the store's checkout lost its badge whenever that tab was active
+    (measured the day it shipped).
+    Never on the render loop: one --print is ~0.1 s, thirteen projects were
+    +1.5 s a render. A thread resolves it; the badge appears a refresh later.
+    A repo found is kept for the process (a name's repo does not move; q or
+    SIGHUP reloads); "none" is asked again after 10 min."""
+    now = time.time()
+    with _REPO_LOCK:
+        hit = _REPO.get(name)
+        if hit and (hit[1] or now - hit[0] < 600):
+            return hit[1]
+        if name in _REPO_ASK:
+            return hit[1] if hit else ""
+        _REPO_ASK.add(name)
+    def work():
+        r = ""
+        try:
+            p = subprocess.run(session_cmd(name, "--print"), capture_output=True, text=True, timeout=10)
+            m = re.search(r"(?:^|\s)repo=(\S+)", p.stdout + "\n" + p.stderr)
+            r = m.group(1) if m and os.path.isdir(m.group(1)) else ""
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        with _REPO_LOCK:
+            _REPO[name] = (time.time(), r)
+            _REPO_ASK.discard(name)
+    if ONESHOT:                 # --once must be complete, as it is for remotes
+        work()
+        return _REPO[name][1]
+    threading.Thread(target=work, daemon=True).start()
+    return hit[1] if hit else ""
+
+def project_ready(name, fallback_path, fallback_default):
+    """ready_where() on the project's own repo, else on the active tab's."""
+    repo = project_repo(name)
+    if repo:
+        return ready_where(repo, default_branch(repo))
+    return ready_where(fallback_path, fallback_default)
+
+READY_X = {}   # project name -> the column its {ready} badge starts at (1-based), this render
+def ready_col(name, plain, field):
+    """Where the badge starts on this row, in CELLS (what a click reports), or
+    nothing when the row carries none - not drawn, or dropped for width."""
+    i = plain.rfind(field) if field else -1
+    if i < 0:
+        READY_X.pop(name, None)
+    else:
+        READY_X[name] = vislen(plain[:i]) + 1
+
+def jump_ready(name):
+    """A click on a project's ready badge: its `ready_window` (default `git`,
+    lazygit) selected - opened first if it is not - and then the jump, so the
+    user lands looking at the eggs: a click on the count or the egg switches
+    to git, where those eggs can be seen. Window first: a popup sidebar exits in jump()."""
+    w = CFG.get("ready_window", "git")
+    if w:
+        if w in open_windows(name):
+            subprocess.run(tmx("select-window", "-t", f"={name}:{w}"))
+        else:
+            r = subprocess.run(session_cmd(name, "--window", w), capture_output=True, text=True)
+            if r.returncode != 0:
+                log_err("jump_ready", f"--window {w} rc {r.returncode}: {(r.stderr or r.stdout).strip()}")
+    jump(("session", name))
+
+_STORES = {}
+def stores():
+    """tm store list -f json, cached 30s. [] when tm is absent or has no
+    `store` verb -- the header then falls back to the tmux server's socket
+    name, never a guess, and _STORES["why"] names the cause so the picker
+    can SAY it instead of drawing an empty list. Seen on a new user's Mac:
+    an older tm (aliases browse ... task) has no store verb
+    at all, `tm store list` exits "No such command 'store'", and the sidebar
+    showed "no stores" as if the store were missing. The rule is per-verb,
+    not per-binary: a tm without `store` is a tm without stores."""
+    now = time.time()
+    if _STORES.get("t") and now - _STORES["t"] < 30:
+        return _STORES["v"]
+    why, v = "", []
+    try:
+        r = subprocess.run(["tm", "store", "list", "-f", "json"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            why = ("tm has no store verb (old taskmaster)"
+                   if "No such command" in (r.stderr + r.stdout)
+                   else f"tm store list failed (rc {r.returncode})")
+        else:
+            v = json.loads(r.stdout or "[]")
+    except FileNotFoundError:
+        why = "tm not installed"
+    except json.JSONDecodeError:
+        why = "tm store list: not JSON"
+    _STORES.update(t=now, v=v, why=why)
+    return v
+
+def stores_why():
+    """Why stores() is empty, or "" -- rendered as one dim row in the picker."""
+    stores()
+    return _STORES.get("why", "")
+
+def store_name(s):
+    """`tm store list -f json` says name="default", store="acme" for the
+    store its own table prints as acme (measured);
+    the table is what the user reads, so `store` wins and `name` is the fallback."""
+    return s.get("store") or s.get("name", "")
+
+def viewed_store():
+    """The store whose tmux server the sidebar is looking at (by SOCK); the
+    active store when no store owns that socket; {} without tm."""
+    return next((s for s in stores() if (s.get("socket") or "default") == SOCK), {}) \
+        or next((s for s in stores() if s.get("active")), {})
+
+def active_store():
+    for s in stores():
+        if s.get("active"):
+            return store_name(s)
+    return ""
+
+def switch_store(name):
+    """Point the sidebar at STORE's tmux server. A VIEW change and nothing
+    else -- never `tm store switch`, which only prints an export line for a
+    shell to eval. Was CALLED and never DEFINED: clicking any store in the
+    picker raised NameError, the sidebar exited non-zero, and the supervisor
+    took that for a deliberate quit and closed the surface: a click on a
+    store made the sidebar go away. A name tm no longer lists falls back to the plain
+    socket, so a stale click cannot leave us pointed at nothing."""
+    global SOCK
+    SOCK = next((s.get("socket") or "default"
+                 for s in stores() if store_name(s) == name), "default")
+
+# ---- the store row IS the store ----------------------------------------------
+# Its NAME opens the store's own session, on the store's own server, showing
+# the store view (sessionview-session --store-view). Which session that is:
+# the one named after the store, else a
+# legacy `store` session, else the identity one, to be created. The SAME
+# helper drives the click and the hide rule, so they cannot disagree.
+LEGACY_STORE_SESSION = "store"   # names a session that may exist; never one to make
+
+def store_session(rec, live=None):
+    """(name, exists): the session the store row of REC opens. LIVE is the
+    set of session names on rec's server when the caller already holds it
+    (the render loop), else it is asked. No store record (no tm): ("", False),
+    so nothing is hidden and nothing is opened."""
+    ident = store_name(rec or {})
+    if not ident:
+        return "", False
+    if live is None:
+        # REC's own socket, by hand - not tmx(), which asks the VIEWED one
+        sock = rec.get("socket") or "default"
+        live = {l.split("\t")[0] for l in sh(["tmux", "-L", sock, "list-sessions", "-F",
+                                               "#{session_name}"]).splitlines() if l}
+    if ident in live:
+        return ident, True
+    if LEGACY_STORE_SESSION in live:
+        return LEGACY_STORE_SESSION, True
+    return ident, False
+
+def store_project(rec):
+    """The store's own project, by NAME only:
+    `store` when projects/store exists, else the one named after the store
+    (projects/STORENAME), else "". It is the store view's Tasks tab, never
+    a peer project, so the new-session picker drops it."""
+    root = (rec or {}).get("path") or ""
+    if not root:
+        return ""
+    for name in ("store", store_name(rec)):
+        if name and os.path.isdir(os.path.join(root, "projects", name)):
+            return name
+    return ""
+
+def row_store():
+    """The record the store row stands for: the active store on the viewed
+    server, else the first store on it, else {} (no tm: the row says the
+    socket and opens nothing)."""
+    on = [s for s in stores() if (s.get("socket") or "default") == SOCK]
+    return next((s for s in on if s.get("active")), None) or (on[0] if on else {})
+
+def open_store(name):
+    """The store row's name, and a pick in the Switch store modal: open
+    NAME's store session and look at it. A down server is booted by
+    `tm store boot` - tm's verb, never a raw tmux new-session (allowlisted
+    env, TASKMASTER_STORE seeded) - and the session it made is passed
+    --fresh so it lands on its first store tab. Every failure is a note."""
+    rec = next((s for s in stores() if store_name(s) == name), None)
+    if rec is None:
+        return note(stores_why() or f"no store {name}", title="store")
+    switch_store(name)
+    # Down = no sessions on its server, measured now: the 30s stores() cache
+    # can say live for a server that has since gone (or down for one booted
+    # since), and a boot of a live server would wrongly pass --fresh.
+    booted = False
+    if not sessions():
+        try:
+            b = subprocess.run(["tm", "store", "boot", rec.get("name") or name],
+                               capture_output=True, text=True)
+        except FileNotFoundError:
+            return note("tm not installed: cannot boot the store's server", title="store")
+        if b.returncode != 0:
+            why = (b.stderr or b.stdout or "").strip().splitlines()
+            return note(why[0] if why else f"tm store boot {name}: rc {b.returncode}", title="store")
+        booted = True
+        _STORES.clear()                                  # its `live` just changed
+    sess, _ = store_session(rec)
+    cmd = [os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-session"), sess, "--store-view", name,
+           "--socket", SOCK]
+    if rec.get("path"):
+        cmd += ["--store", os.path.realpath(rec["path"])]
+    if booted:
+        cmd.append("--fresh")
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    _PROJ.clear()
+    if r.returncode != 0:
+        why = (r.stderr or r.stdout or "").strip().splitlines()
+        note(why[0] if why else f"store view: rc {r.returncode}", title="store")
+        if sess not in {n for n, _, _ in sessions()}:
+            return                     # nothing to look at: never attach a missing session
+    jump(("session", sess))
+
+# ---- the user's own mail, a row under no store and no project ----------------
+# A place for the user's own mutt instance, separate from projects. ONE
+# session (user_mail_session) on ONE server
+# (user_mail_socket, `default`), whichever store is viewed;
+# bin/sessionview-usermail builds it, the click jumps across servers to it.
+
+def user_mail_row():
+    """(sock, name) when the row is drawn, else None: user_mail_command is
+    not "" and its first word - or `mutt`, standing in for a missing
+    `neomutt` - is on PATH. A PATH lookup, no subprocess; asked once per
+    render, and the click re-checks in sessionview-usermail anyway."""
+    cmd = str(CFG.get("user_mail_command", "neomutt") or "")
+    first = cmd.split()[0] if cmd.split() else ""
+    if not first or not (shutil.which(first) or (first == "neomutt" and shutil.which("mutt"))):
+        return None
+    return (str(CFG.get("user_mail_socket") or "default"), str(CFG.get("user_mail_session") or "mail"))
+
+def user_mail_open(val):
+    """The row's left-click: find-or-create the session, then look at it -
+    on its own server, so the view follows (jump's `xsession`). A refusal
+    (no command, no binary, server down) is a note, and nothing moves."""
+    sock, name = val
+    r = subprocess.run([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-usermail"),
+                        "--socket", sock, "--session", name], capture_output=True, text=True)
+    if r.returncode != 0:
+        why = (r.stderr or r.stdout or "").strip().splitlines()
+        return note(why[0] if why else f"sessionview-usermail: rc {r.returncode}", title="mail")
+    jump(("xsession", (sock, name)))
+
+def picker_order():
+    """recent | alpha -- the picker's sort. The last flip is remembered
+    (state picker-order); before any flip, sidebar.toml `picker_order`, else
+    recent. A flip to alphabetical is remembered from last time."""
+    try:
+        v = open(state("picker-order")).read().strip()
+    except OSError:
+        v = ""
+    return v if v in ("recent", "alpha") else CFG.get("picker_order", "recent")
+
+def flip_picker_order():
+    new = "alpha" if picker_order() == "recent" else "recent"
+    with open(state("picker-order"), "w") as f:
+        f.write(new)
+    _PROJ.clear()
+
+_PROJ = {}
+_REPOS = {}
+
+def repo_projects():
+    """{name: path} for every checkout under `project_dirs` - projects that
+    live on disk rather than in a task manager.
+
+    Without tm the picker had nothing but the sessions that already existed,
+    so a new user's `+` opened an EMPTY list (seen with no taskmaster and
+    the work in ~/workspace). A directory holding a
+    `.git` is a project and its folder name is the name.
+
+    `.git` may be a FILE - a worktree or a submodule - so the test is exists,
+    not isdir. A repo is not descended into: a submodule is not a project of
+    its own. A path that does not exist is skipped in silence, which is what
+    makes this invisible to anyone who has not set it.
+
+    Defaults here are the TEMPLATE's, character for character (config.json
+    `project_dirs`, `project_dirs_depth`). A code default that disagrees with
+    the template is a bug (project_expand_selected once had one).
+    Cached 60s: this runs on a redraw."""
+    now = time.time()
+    if _REPOS.get("t") and now - _REPOS["t"] < 60:
+        return _REPOS["v"]
+    try:
+        depth = max(1, min(4, int(CFG.get("project_dirs_depth", 2))))
+    except (TypeError, ValueError):
+        depth = 2
+    found = {}
+    for d in (CFG.get("project_dirs", ["~/workspace"]) or []):
+        stack = [(os.path.expanduser(str(d)), 1)]
+        while stack:
+            here, lvl = stack.pop()
+            try:
+                entries = sorted(os.scandir(here), key=lambda e: e.name)
+            except OSError:
+                continue                      # missing or unreadable: skip
+            for e in entries:
+                if e.name.startswith(".") or not e.is_dir(follow_symlinks=False):
+                    continue
+                if os.path.exists(os.path.join(e.path, ".git")):
+                    found.setdefault(e.name, e.path)      # first one wins
+                elif lvl < depth:
+                    stack.append((e.path, lvl + 1))
+            if len(found) >= 500:             # a home directory is not free
+                stack = []
+    _REPOS.update(t=now, v=found)
+    return found
+
+def projects_recent():
+    """[(name, recency_epoch)] most recent first, for the new-session picker. Names from
+    `tm project list`; recency = the newer of the store's projects/NAME mtime
+    (what taskmaster last touched) and the last recent.tsv line for it
+    (what sessionview-session last opened). Cached 60s; [] without tm."""
+    now = time.time()
+    order = picker_order()
+    if _PROJ.get("t") and now - _PROJ["t"] < 60 and _PROJ.get("sock") == SOCK \
+            and _PROJ.get("order") == order:
+        return _PROJ["v"]
+    # The VIEWED store's projects, not the active one's: a pick changes the
+    # server AND the store the picker offers (`tm project list --store PATH`
+    # is a one-shot read of another store). Cache is per pick.
+    store = viewed_store().get("path") or os.path.expanduser("~/.taskmaster")
+    store = os.path.realpath(store)
+    try:
+        names = [p.get("name", "") for p in json.loads(
+            sh(["tm", "project", "list", "-f", "json", "--store", store]) or "[]")]
+    except json.JSONDecodeError:
+        names = []
+    if not names:
+        # No tm, or a store with no projects: the server's sessions ARE the
+        # list, so the picker still works for someone without taskmaster,
+        # falling back to the directory name.
+        names = [n for n, _, _ in sessions()]
+    # ...and the checkouts under project_dirs, whether or not tm answered:
+    # someone can have a store AND keep work outside it. tm wins a collision.
+    disk = repo_projects()
+    seen = set(names)
+    for n in sorted(disk):
+        if n not in seen:
+            names.append(n)
+            seen.add(n)
+    rec = {}
+    try:
+        for l in open(state("recent.tsv")):
+            ts, _, n = l.rstrip("\n").partition("\t")
+            if n and ts.isdigit():
+                rec[n] = max(rec.get(n, 0), int(ts))
+    except OSError:
+        pass
+    out = []
+    for n in names:
+        if not n:
+            continue
+        try:
+            m = os.stat(os.path.join(store, "projects", n)).st_mtime
+        except OSError:
+            m = 0
+        if not m and n in disk:          # a disk project: the checkout's own mtime
+            try:
+                m = os.stat(disk[n]).st_mtime
+            except OSError:
+                m = 0
+        out.append((n, max(m, rec.get(n, 0))))
+    if order == "alpha":
+        out.sort(key=lambda x: x[0].lower())
+    else:
+        out.sort(key=lambda x: -x[1])
+    _PROJ.update(t=now, v=out, sock=SOCK, order=order)
+    return out
+
+def open_project(name):
+    """Make (or keep) NAME's session via sessionview-session, then look at it."""
+    global PICKER
+    name = name.strip()
+    if not name:
+        return
+    cmd = [os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-session"), name, "--socket", SOCK]
+    # code_nvim is sessionview-session's to decide (the cascade: built-in > host >
+    # store > project); passing --nvim from here would make the host layer
+    # beat a project's own .sessionview.
+    store = viewed_store().get("path") or ""
+    if store:
+        cmd += ["--store", os.path.realpath(store)]
+    subprocess.run(cmd, capture_output=True)   # the store's server starts here if it was not running
+    _PROJ.clear()
+    PICKER = None
+    jump(("session", name))
+
+# ---- the ONE picker -------------------------------------------------------------
+# The new-session box, extracted so the same box serves other lists, for
+# consistency: NEW TAB (the same box as for sessions) and START AN AGENT
+# (a few typed letters, then enter). It was sixty lines welded to sessions (NEWSESS, MODE
+# "newsess", newsess_keys, three mouse targets). Now: one box, three sources.
+#   title / label     " new tab · sessionview                esc"
+#   > filter          typing narrows; prefix matches first, then anywhere
+#   hint              tab flips recent/a-z where the source has an order
+#   rows              mark + name + tag (open/live/pinned) + a dim hint at right
+# Enter = the highlighted row, or the typed name when nothing matches (the
+# new-session rule, kept). Esc closes. Arrows, and a click on a row, as before.
+# `items` is read ONCE, when the box opens (a tab list costs a subprocess), and
+# again only when the order flips.
+
+def picker_rows(flt, items):
+    """The rows a filter leaves: names that START with it first, then names
+    that merely contain it, each group in the source's own order - so `al`
+    lands on alice, not on a project whose middle happens to hold it."""
+    f = flt.strip().lower()
+    if not f:
+        return list(items)
+    pre = [it for it in items if it["name"].lower().startswith(f)]
+    return pre + [it for it in items if f in it["name"].lower() and it not in pre]
+
+def open_picker(kind, sess=None, pick=None):
+    """Open the picker on one of three sources. `pick(value)` is what Enter or
+    a click runs; a caller may pass its own (a plugin action's input)."""
+    global PICKER, MENU, PROMPT
+    MENU = PROMPT = None
+    sess = sess or current_session()
+    if kind == "sessions":
+        p = {"title": "new session", "hint": "type a name, enter opens it", "flip": True,
+             "items": session_items, "pick": open_project}
+    elif kind == "windows":
+        p = {"title": "new tab", "label": sess, "hint": "enter opens \u00b7 ^p pins",
+             "items": lambda: window_items(sess), "pick": lambda n: open_window(sess, n),
+             "pin": pin_window}
+    elif kind == "agents":
+        p = {"title": "start an agent", "label": sess, "hint": "enter starts \u00b7 ^p pins \u00b7 ^e on open",
+             "items": agent_items, "pick": lambda n: start_agent(sess, n),
+             "pin": pin_agent, "onopen": set_autostart}
+    else:
+        return note(f"no picker '{kind}'")
+    if pick:
+        p["pick"] = pick
+    p.update(filter="", cur=0, rows=p["items"]())
+    PICKER = p
+
+def session_items():
+    """The new-session list: the viewed store's projects, most recent first (or a-z), the
+    ones with a session open marked. The store's own project is not among
+    them: it is the store view's Tasks tab, opened by the
+    store row - picking it here would build a project-mode session over
+    the store session. projects_recent() stays whole: a source, not a view."""
+    open_ = {n for n, _, _ in sessions()}
+    hide = store_project(viewed_store())
+    return [{"name": n, "live": n in open_, "tag": "open" if n in open_ else ""}
+            for n, _ in projects_recent() if not (hide and n == hide)]
+
+def session_cmd(sess, *flags):
+    """sessionview-session for SESS on the viewed server and store, with the
+    repo the session's own pane is in as the hint - so a session made by hand
+    (never through the picker) still gets its repo tabs offered."""
+    cmd = [os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-session"), sess, "--socket", SOCK]
+    store = viewed_store().get("path") or ""
+    if store:
+        cmd += ["--store", os.path.realpath(store)]
+    path = next((p[5] for p in panes() if p[1] == sess and p[3] == "1" and p[4] == "1"), "")
+    top = sh(["git", "-C", path, "rev-parse", "--show-toplevel"]).strip() if path else ""
+    # The taskmaster STORE is a git repo too: with only the tasks tab open,
+    # the active pane sits in STORE/projects/NAME and its toplevel is the
+    # store - which then stood in for the project's repo (shell and repo
+    # tabs opened in the store's checkout). Inside the
+    # store: no hint; sessionview-session resolves the repo itself.
+    st = os.path.realpath(store or os.path.expanduser("~/.taskmaster"))
+    if top and top != st and not top.startswith(st + os.sep):
+        cmd += ["--repo", top]
+    return cmd + list(flags)
+
+def open_windows(sess):
+    return set(sh(tmx("list-windows", "-t", "=" + sess, "-F", "#{window_name}")).splitlines())
+
+def window_items(sess):
+    """The configured windows that APPLY to SESS - asked of sessionview-session
+    (--list-windows), the one evaluator of `when`, so this box cannot offer a
+    git tab where there is no repo. Open ones are marked; picking one selects
+    it rather than minting a twin."""
+    open_ = open_windows(sess)
+    pins = window_pins()[0]
+    pinned = {w["name"] for w in config_windows()[0] if isinstance(w, dict) and w.get("name") and is_pinned(w, pins)}
+    out = []
+    for l in sh(session_cmd(sess, "--list-windows")).splitlines():
+        name, _, hint = l.partition("\t")
+        if name:
+            tags = (["open"] if name in open_ else []) + (["pinned"] if name in pinned else [])
+            out.append({"name": name, "live": name in open_, "pinned": name in pinned,
+                        "tag": " \u00b7 ".join(tags), "hint": hint})
+    return sorted(out, key=lambda it: not it["pinned"])       # pinned first, stable
+
+# -- pins: a pinned tab is how to choose which tabs open with a session ------
+# A PINNED TAB is one that opens with the session: `auto` on its `windows`
+# entry. A PINNED AGENT sits at the top of the start-an-agent list:
+# `pinned_agents`. ^p on the highlighted row, or a right-click on any row,
+# toggles it; pinned rows sit first. A tab pin is a DELTA (`window_pins`,
+# {name: bool}) laid over the list's own `auto`, never a copy of the list:
+# the first cut copied the whole `windows` list into the home file
+# on the first pin, and the template's next change (tasks
+# unpinned) no longer reached that user. Written to the HOME
+# config only (sessionview-config set): a store's or project's `.sessionview`
+# that sets the same key would shadow the write, so that case is refused
+# with the path.
+CFG_BIN = os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config")
+
+def is_pinned(w, pins):
+    """A normal entry is pinned unless `auto` is false; a FALLBACK entry only
+    when `auto` is true - unset means the safety net (shell can be pinned by
+    a user who wants it, and stays the fallback).
+    A bool in `window_pins` for the name wins over the entry's `auto`."""
+    auto = pins.get(w.get("name")) if isinstance(pins.get(w.get("name")), bool) else w.get("auto")
+    return auto is True if w.get("when") == "fallback" else auto is not False
+
+def window_pins():
+    """(the merged `window_pins` dict, the file that set it)."""
+    out = sh([CFG_BIN, "get", "window_pins", "--json", "--where"]).rstrip("\n")
+    val, _, src = out.rpartition("\t")
+    try:
+        d = json.loads(val or "{}")
+    except json.JSONDecodeError:
+        d = {}
+    return ({k: v for k, v in d.items() if isinstance(v, bool)} if isinstance(d, dict) else {}), src
+
+def config_windows():
+    """(the merged `windows` list, the file that set it)."""
+    out = sh([CFG_BIN, "get", "windows", "--json", "--where"]).rstrip("\n")
+    val, _, src = out.rpartition("\t")
+    try:
+        lst = json.loads(val or "[]")
+    except json.JSONDecodeError:
+        lst = []
+    return (lst if isinstance(lst, list) else []), src
+
+def set_home_config(key, value, src):
+    home = sh([CFG_BIN, "path"]).strip()
+    tpl = os.path.join(SESSIONVIEW_ROOT, "config", "config.json")
+    if src and os.path.realpath(src) not in (os.path.realpath(home), os.path.realpath(tpl)):
+        note(f"{key} is set by {src.replace(os.path.expanduser('~'), '~')} - pin it there", title="not saved")
+        return False
+    r = subprocess.run([CFG_BIN, "set", key, json.dumps(value), "--json"], capture_output=True, text=True)
+    if r.returncode != 0:
+        why = (r.stderr or r.stdout or "").strip().splitlines()
+        note(why[0] if why else f"rc {r.returncode}", title="not saved")
+        return False
+    CFG[key] = value
+    return True
+
+def pin_window(name):
+    entries, _ = config_windows()
+    e = next((w for w in entries if isinstance(w, dict) and w.get("name") == name), None)
+    if e is None:
+        return note(f"{name} is not a configured window - only those can be pinned")
+    pins, src = window_pins()
+    pins[name] = not is_pinned(e, pins)   # pinned: opens with the session; unpinned: offered only
+    set_home_config("window_pins", pins, src)
+
+def pin_agent(name):
+    if name == "-":
+        return note("a plain claude has no name to pin")
+    out = sh([CFG_BIN, "get", "pinned_agents", "--json", "--where"]).rstrip("\n")
+    val, _, src = out.rpartition("\t")
+    try:
+        cur = [n for n in json.loads(val or "[]") if isinstance(n, str)]
+    except json.JSONDecodeError:
+        cur = []
+    cur = [n for n in cur if n != name] if name in cur else cur + [name]
+    set_home_config("pinned_agents", cur, src)
+
+def set_autostart(name):
+    """^e in the agent picker: NAME becomes the agent that starts when
+    sessionview opens (config autostart_agent, home layer). ^e on the agent
+    that already has it turns autostart off. A project's own .sessionview
+    still wins inside that project (sessionview-autostart reads it)."""
+    if name == "-":
+        return note("a plain claude has no name to start on open")
+    out = sh([CFG_BIN, "get", "autostart_agent", "--where"]).rstrip("\n")
+    val, _, src = out.rpartition("\t")
+    new = "" if val == name else name
+    if set_home_config("autostart_agent", new, src):
+        note(f"{name} starts when sessionview opens" if new else "no agent starts on open", title="saved")
+
+def open_window(sess, name):
+    """A pick in the new-tab box. Open already -> select it. A configured
+    window -> sessionview-session --window (its cwd and command). Anything
+    else -> a plain tab of that name in the session's current directory, which
+    is what New tab did before (rc 3 from --window says "not configured")."""
+    name = name.strip()
+    if not name or not sess:
+        return
+    if name in open_windows(sess):
+        subprocess.run(tmx("select-window", "-t", f"={sess}:{name}"))
+    else:
+        r = subprocess.run(session_cmd(sess, "--window", name), capture_output=True, text=True)
+        if r.returncode == 3:
+            path = sh(tmx("display-message", "-p", "-t", sess, "#{pane_current_path}")).strip() \
+                or os.path.expanduser("~")
+            n = run_checked(tmx("new-window", "-t", sess, "-c", path, "-n", name), "open_window")
+            if n.returncode != 0:
+                return note((n.stderr or "").strip().splitlines()[0] if n.stderr else f"rc {n.returncode}", title="new tab failed")
+        elif r.returncode != 0:
+            log_err("open_window", f"--window {name} rc {r.returncode}: {(r.stderr or r.stdout).strip()}")
+            why = (r.stderr or r.stdout or "").strip().splitlines()
+            return note(why[0] if why else f"rc {r.returncode}", title="failed")
+    focus_main()                  # the user asked for a tab; the keyboard goes with it
+
+def agent_items():
+    """What `session start` can launch, pinned names first (config
+    `pinned_agents`, in that order), then the rest as the launcher lists them;
+    a live seat is marked. The last row is a plain claude with no agent file
+    (`-`), which the project menu's start-agent already means by an empty
+    answer."""
+    names = registered_agents()
+    pinned = [n for n in CFG.get("pinned_agents", []) or [] if n in names]
+    live = {a.get("agent") for a in agents() if a.get("agent") and not a.get("_host")}
+    out = []
+    for n in pinned + [n for n in names if n not in pinned]:
+        tags = ((["live"] if n in live else []) + (["pinned"] if n in pinned else [])
+                + (["on open"] if n == CFG.get("autostart_agent") else []))
+        out.append({"name": n, "live": n in live, "pinned": n in pinned, "tag": " \u00b7 ".join(tags)})
+    out.append({"name": "claude", "value": "-", "tag": "plain, no agent file"})
+    return out
+
+def start_agent(sess, name):
+    """The + under agents, and now the picker: sessionview-autostart --start,
+    which refuses a second seat for a live agent and gives the new one its own
+    window. The agent wakes in ITS home (its file's `start: directory:`),
+    never in the sidebar's cwd. Then the keyboard goes to it - the user
+    pressed + to talk to it."""
+    name = name.strip()
+    if not name or not sess:
+        return
+    r = subprocess.run([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-autostart"),
+                        "--start", name, SOCK, sess], capture_output=True, text=True)
+    if r.returncode != 0:
+        why = (r.stderr or r.stdout or "").strip().splitlines()
+        return note(why[0] if why else f"rc {r.returncode}", title="not started")
+    focus_main()
+
+def picker_shown(p, room):
+    """The rows the filter leaves, clipped to the room, the cursor clamped."""
+    shown = picker_rows(p["filter"], p["rows"])[:max(1, room)]
+    p["cur"] = min(p.get("cur", 0), max(0, len(shown) - 1))
+    return shown
+
+def render_picker(put, used, height):
+    """Draw the open PICKER below `used` rows: title, the input, a hint, then
+    the rows the filter leaves, the cursor's row bright."""
+    p = PICKER
+    label = p["title"] + (" \u00b7 " + p["label"] if p.get("label") else "")
+    put(C_SEL + "\033[1m" + lay(" " + label + "\tesc ", WIDTH) + "\033[22m" + NOFG,
+        ("picker-close", None))
+    put(C_SEL + " > " + p["filter"] + CURSOR + NOFG)
+    if p.get("flip"):
+        flip = "a-z" if picker_order() == "recent" else "recent"
+        put(C_DIM + lay(" " + p["hint"] + "\ttab: " + flip + " ", WIDTH) + NOFG, ("picker-order", None))
+    else:
+        put(C_DIM + lay(" " + p["hint"], WIDTH) + NOFG)
+    put("")
+    shown = picker_shown(p, height - used - 6)
+    for i, it in enumerate(shown):
+        live = it.get("live")
+        mark = GLYPH["idle"] if live else C_DIM + "\u25cb" + NOFG
+        tag = (C_DIM + "  " + it["tag"] + NOFG) if it.get("tag") else ""
+        hint = (C_DIM + it["hint"] + " ") if it.get("hint") else ""
+        sel = i == p["cur"]
+        text = lay(f" {mark} " + (C_SEL if live else C_NAME) + it["name"] + NOFG + tag + "\t" + hint, WIDTH)
+        put(paint(text, True) if sel else text, ("picker-item", it.get("value", it["name"])), sel)
+
+def picker_keys(text):
+    """Printable filters, backspace edits, arrows move, tab flips the order
+    where there is one, enter takes the highlighted row (or the typed name
+    when nothing matches), esc closes."""
+    global PICKER
+    i = 0
+    while i < len(text) and PICKER is not None:
+        ch, p = text[i], PICKER
+        if ch == "\x1b":
+            m = ARROW_RE.match(text, i)
+            if m:                        # up/down move the cursor to select a row
+                d = m.group(1)
+                if d in "AB":
+                    p["cur"] = max(0, p.get("cur", 0) + (1 if d == "B" else -1))
+                i = m.end(); continue
+            PICKER = None
+            return
+        if ch in "\r\n":
+            shown = picker_shown(p, 10 ** 6)
+            value = shown[p["cur"]].get("value", shown[p["cur"]]["name"]) if shown else p["filter"].strip()
+            PICKER = None
+            if value:
+                p["pick"](value)
+            return
+        if ch in "\x7f\b":
+            p["filter"] = p["filter"][:-1]
+        elif ch == "\x10" and p.get("pin"):   # ^p pins the highlighted row
+            shown = picker_shown(p, 10 ** 6)
+            if shown:
+                p["pin"](shown[p["cur"]].get("value", shown[p["cur"]]["name"]))
+                p["rows"] = p["items"]()
+        elif ch == "\x05" and p.get("onopen"):   # ^e: the highlighted agent starts on open (not ^o: macOS eats it as VDISCARD in cbreak mode)
+            shown = picker_shown(p, 10 ** 6)
+            if shown:
+                p["onopen"](shown[p["cur"]].get("value", shown[p["cur"]]["name"]))
+                p["rows"] = p["items"]()
+        elif ch == "\t" and p.get("flip"):   # tab flips recent <-> a-z, remembered
+            flip_picker_order(); p["cur"] = 0; p["rows"] = p["items"]()
+        elif ch.isprintable():
+            p["filter"] += ch; p["cur"] = 0
+        i += 1
+
+def picker_click(what, val):
+    """A click in the open box: its esc, its order word, or a row."""
+    global PICKER
+    p = PICKER
+    if p is None:
+        return
+    if what == "picker-close":
+        PICKER = None
+    elif what == "picker-order":
+        flip_picker_order(); p["cur"] = 0; p["rows"] = p["items"]()
+    elif what == "picker-item":
+        PICKER = None
+        p["pick"](val)
+    elif what == "picker-pin" and p.get("pin"):     # right-click on a row
+        p["pin"](val)
+        p["rows"] = p["items"]()
+
+def pick_main(kind, sess):
+    """--pick KIND [SESSION]: the picker ALONE, sized to the terminal it is in
+    - a tmux display-popup, the tab bar's + (sessionview-newtab --popup),
+    so that + opens it over the main pane. Same rows, same keys; exits on the pick or
+    on esc, and the popup closes with it."""
+    global WIDTH
+    try:
+        cols = os.get_terminal_size().columns
+    except OSError:
+        cols = 0
+    if cols >= 12:                 # a pty with no size yet reports 0: keep the config width
+        WIDTH = cols
+    open_picker(kind, sess)
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write("\033[?1000h\033[?1006h\033[?25l"); sys.stdout.flush()
+        while PICKER is not None:
+            try:
+                h = os.get_terminal_size().lines
+            except OSError:
+                h = 12
+            lines, targets = [], {}
+            def put(text, target=None, selected=False):
+                if target:
+                    targets[len(lines)] = target
+                lines.append(row(text, selected))
+            render_picker(put, 0, h)
+            draw(lines)
+            buf = os.read(fd, 64).decode(errors="ignore")
+            for m in MOUSE_RE.finditer(buf):
+                btn, y, k = int(m.group(1)), int(m.group(3)), m.group(4)
+                t = targets.get(y - 1)
+                if k == "M" and btn == 0 and t:
+                    picker_click(*t)
+                elif k == "M" and btn == 2 and t and t[0] == "picker-item":
+                    picker_click("picker-pin", t[1])
+            keys = MOUSE_RE.sub("", buf)
+            if keys and PICKER is not None:
+                picker_keys(keys)
+    finally:
+        sys.stdout.write("\033[?1006l\033[?1000l\033[?25h" + RESET); sys.stdout.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+# ---- remotes: one ssh per host per remote_refresh, in a thread -------------------
+REMOTE = {}                       # host -> {"agents", "sessions", "p2s", "p2w", "ok", "err", "t"}
+# LogLevel=ERROR: without it the control master prints "Shared connection to
+# HOST closed." on stderr at INFO, and fetch_remote's "last stderr line" - the
+# host row's error label - was that line, 45 columns of noise hiding the real
+# error underneath. Invisible while the bar clipped at 34; fit: auto sized
+# the sidebar to it (measured, need.log: the label read
+# `HOST | Shared connection to <host>`, clipped).
+# NO ControlMaster/ControlPath of our own. The sidebar once kept a PRIVATE
+# control socket, so the user's own `ssh HOST` did nothing
+# for it: every remote_refresh (5 s) with no private master opened a fresh
+# connection, and each one asked the user's security key for a touch, every
+# few seconds, while the user sat with that host open in a
+# shell. The rule: never retry ssh in a loop; every
+# attempt is a prompt on the user's key. So the sidebar RIDES the user's own ssh
+# config - the master the user's shells make is the one it uses - and by default
+# (remote_connect: ride) it never connects at all without one: see
+# fetch_remote.
+SSH_CM = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR"]
+# The far host is asked for exactly what the local one is (session_list_args):
+# a format that shows {ctx} or {model} pays the transcript read there too.
+# This was once a fixed --no-context, so a remote row
+# rendered `-` for context however the format was set - which reads as "that
+# seat is broken", not "we did not ask".
+REMOTE_CMD = ('session list --json' + ('' if "recap" in CFG["agent_format"] + CFG.get("agent_format2", "") else ' --no-recap')
+              + ('' if wants_context(CFG["agent_format"] + CFG.get("agent_format2", "")) else ' --no-context')
+              + '; printf "\\n---PANES\\n"; '
+              'tmux list-panes -a -F "#{pane_id}\t#{session_name}\t#{window_name}\t#{window_active}\t'
+              '#{pane_active}\t#{pane_current_path}\t#{window_index}"; printf "\\n---SESS\\n"; '
+              'tmux list-sessions -F "#{session_name}\t#{session_windows}\t#{session_attached}"')
+
+# ssh forwards TERM, and a host without Ghostty's terminfo answers every tmux
+# call with "missing or unsuitable terminal: xterm-ghostty" -- which is exactly
+# what a sidebar (TERM=xterm-ghostty under Ghostty) got from a remote host
+# while a tmux shell (tmux-256color) got sessions. Measured in the
+# sidebar-remote-HOST.json state file. So every remote call goes out as a plain
+# xterm-256color, poll and attach alike.
+SSH_ENV = dict(os.environ, TERM="xterm-256color")
+
+def fetch_remote(host):
+    if str(CFG.get("remote_connect", "ride")) != "auto":
+        # ride: only over a control master the USER already holds (`ssh -O
+        # check` asks the socket, no connection, no key). None -> say so on
+        # the row and touch nothing. A sidebar must never be the thing that
+        # makes a security key beep every five seconds.
+        try:
+            chk = subprocess.run(["ssh", *SSH_CM, "-O", "check", host], capture_output=True,
+                                 text=True, timeout=5, env=SSH_ENV)
+            alive = chk.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            alive = False
+        if not alive:
+            REMOTE[host] = {"agents": [], "sessions": [], "p2s": {}, "p2w": {}, "ok": False,
+                            "err": "not connected \u00b7 ssh " + host, "t": time.time()}
+            return
+    try:
+        r = subprocess.run(["ssh", *SSH_CM, host, REMOTE_CMD], capture_output=True, text=True,
+                           timeout=20, env=SSH_ENV)
+        out = r.stdout
+    except (subprocess.TimeoutExpired, OSError) as e:
+        REMOTE[host] = {"agents": [], "sessions": [], "p2s": {}, "p2w": {}, "ok": False,
+                        "err": str(e).splitlines()[0][:24], "t": time.time()}
+        return
+    js, _, rest = out.partition("---PANES")
+    pn, _, ss = rest.partition("---SESS")
+    try:
+        agents_ = json.loads(js.strip() or "[]")
+    except json.JSONDecodeError:
+        agents_ = []
+    pl = [l.split("\t") for l in pn.splitlines() if l.count("\t") == 6]
+    sess = [l.split("\t") for l in ss.splitlines() if l.count("\t") == 2]
+    REMOTE[host] = {"agents": agents_, "sessions": sess, "p2s": {p[0]: p[1] for p in pl},
+                    "p2w": {p[0]: p[2] for p in pl}, "ok": r.returncode == 0 or bool(agents_ or sess),
+                    "err": (r.stderr.strip().splitlines() or [""])[-1][:24] if r.returncode else "", "t": time.time()}
+    try:   # evidence: what this process last saw from the host (for a host row that shows nothing)
+        with open(state(f"sidebar-remote-{host}.json"), "w") as f:
+            json.dump({"t": time.strftime("%H:%M:%S"), "rc": r.returncode, "n_agents": len(agents_),
+                       "sessions": sess, "err": REMOTE[host]["err"], "stderr": r.stderr[-600:],
+                       "stdout_tail": out[-400:], "env_term": os.environ.get("TERM", ""), "path": os.environ.get("PATH", "")[:200]}, f)
+    except OSError:
+        pass
+
+def remote_loop(host):
+    while True:
+        fetch_remote(host)
+        time.sleep(float(CFG.get("remote_refresh", 5)))
+
+def remote_attach(host, session, pane=""):
+    """One LOCAL tmux session per remote host, named after the host, holding
+    one window per remote session (named after it) running ssh -t host tmux
+    attach. A click on a remote seat switches the sessionview client there, so the
+    tab bar shows that host's sessions as tabs and nothing else's. The
+    attach tab once went into whichever session was
+    CURRENT and the dedupe looked only there, so clicks from three different
+    sessions collected three "HOST:SESSION" tabs, one in each of the
+    sessions. The host session is hidden from the local project list;
+    the host line in the sidebar is the row for it. With a pane, the remote
+    window/pane is selected first (over the control socket, so it also
+    works when the local window already exists)."""
+    lsess = host                      # "@host" would parse as a window id
+    local = sh(["tmux", "-L", "default", "list-sessions", "-F", "#{session_name}"]).split()
+    have = (sh(["tmux", "-L", "default", "list-windows", "-t", "=" + lsess, "-F", "#{window_name}"]).splitlines()
+            if lsess in local else None)
+    sel = ""
+    if pane:
+        sel = f"tmux select-window -t {shlex.quote(pane)}; tmux select-pane -t {shlex.quote(pane)}; "
+    if have is not None and session in have:
+        if sel:
+            subprocess.run(["ssh", *SSH_CM, host, sel.rstrip("; ")],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["tmux", "-L", "default", "select-window", "-t", f"={lsess}:{session}"])
+        move_client("default", lsess)
+        return
+    cmd = sel + f"exec tmux attach -t ={shlex.quote(session)}"
+    ssh = ["ssh", "-t", *SSH_CM, host, cmd]
+    if have is None:
+        subprocess.run(["tmux", "-L", "default", "new-session", "-d", "-s", lsess, "-n", session,
+                        "-e", "TERM=xterm-256color", *ssh])
+    else:
+        subprocess.run(["tmux", "-L", "default", "new-window", "-t", "=" + lsess, "-n", session,
+                        "-e", "TERM=xterm-256color", *ssh])
+    move_client("default", lsess)
+
+def session_list_args():
+    """Ask session list only for what a format will display."""
+    fmt = (CFG["agent_format"] + CFG.get("agent_format2", "")
+           + CFG.get("group_format", ""))
+    args = ["session", "list", "--json"]
+    if "recap" not in fmt:
+        args.append("--no-recap")
+    if not wants_context(fmt):
+        args.append("--no-context")
+    return args
+
+def agents():
+    try:
+        return json.loads(sh(session_list_args()) or "[]")
+    except json.JSONDecodeError:
+        return []
+
+class _Safe(dict):
+    def __missing__(self, k):
+        return ""
+
+def short_model(m):
+    """`claude-fable-5-1` -> `fable5.1`, `claude-opus-4-1-20250805` -> `opus4.1`:
+    the family and the version, no vendor, no date - a 40-column row has
+    room for the number that matters, not the id it was ordered by."""
+    if not m:
+        return ""
+    parts = [t for t in str(m).split("-") if t and t != "claude" and not (t.isdigit() and len(t) >= 8)]
+    if not parts:
+        return str(m)
+    fam, ver = parts[0], [t for t in parts[1:] if t.isdigit()]
+    return fam + ".".join(ver)
+
+def agent_fields(a, window="", dups=(), model_w=0):
+    """`dups` is the set of agent names that appear on more than one live row:
+    {label} is the plain agent name (`alice`) unless it collides, then the
+    numbered seat (`alice-e9`): two rows with the same name fall back to
+    showing the extra number."""
+    f = _Safe(a)
+    f["glyph"] = GLYPH.get(a.get("status"), "?")
+    # Right-hand columns line up row to row: the model is right-justified to
+    # the widest one on screen, the context to 4 (`100%` is real). The dash
+    # is left padded too, so the right-hand side lines up row to row.
+    f["model"] = short_model(a.get("context_model")).rjust(model_w)
+    agent = a.get("agent") or ""
+    f["label"] = (a.get("name") or agent) if (not agent or agent in dups) else agent
+    f["idle"] = fmt_idle(a.get("idle_s") or 0)
+    f["runtime"] = fmt_idle(a.get("runtime_s") or 0)
+    # The CONTEXT rule `session list`'s table uses (sessiontools.context.cell):
+    # `-` nothing measurable; `?` a reading whose fullness cannot be claimed -
+    # no window, or the <synthetic> zero tail (used 0 on a seat that reached
+    # its peak), which a bare context_pct shows as a confident 0%.
+    pct, used = a.get("context_pct"), a.get("context_used")
+    if used is None:
+        ctx = "-"
+    elif (used == 0 and a.get("context_peak")) or pct is None:
+        ctx = "?"
+    else:
+        ctx = f"{pct}%"
+    f["ctx"] = ctx.rjust(4)
+    f["window"] = window
+    f["tab"] = f" \033[2m·\033[22m {window}" if window else ""   # herdr: "name · tab"; nothing when the seat has no tmux window
+    f["host"] = a.get("_host") or ""
+    f["at"] = f"\033[2m@{f['host']}\033[22m " if f["host"] else ""   # in FRONT: long seat names would push it off the row
+    f["w8"] = WIDTH - 8          # legacy width helpers for older formats
+    f["w10"] = WIDTH - 10
+    for k, v in list(f.items()):
+        if v is None:
+            f[k] = ""
+    return f
+
+# ---- the agent glyph in the TAB BAR --------------------------------------------
+# tmux cannot ask `session list`, so this loop -- which already knows pane ->
+# window and status -- writes each window's rollup into two WINDOW options,
+# @sessionview_glyph and @sessionview_glyph_fg, and frame.conf / tabs-top.conf read them
+# (measured: a window option expands inside #{W:...} and
+# inside #[fg=...]). Writes only on change; clears what it set on exit, and
+# sweeps leftovers at start, so a glyph cannot outlive the sidebar by much.
+_TABS = {}
+WRITE_TABS = True
+TAB_CH = {"busy": "\u25d0", "idle": "\u25cf", "shell": "\u25cb",
+          "blocked": "\u25a0", "waiting": "\u25a0"}
+TAB_FG = {"busy": "#f9e2af", "idle": "#a6e3a1", "shell": "#7f859b",
+          "blocked": "#f38ba8", "waiting": "#f38ba8"}
+
+def tab_glyphs(by_win, pl):
+    if not WRITE_TABS or not CFG.get("tab_glyphs", True):
+        return
+    if "_swept" not in _TABS:                       # a crashed run's leftovers
+        _TABS["_swept"] = True
+        out = sh(tmx("list-windows", "-a", "-F", "#{session_name}:#{window_index}\t#{@sessionview_glyph}"))
+        for l in out.splitlines():
+            w, _, g = l.partition("\t")
+            if g:
+                _TABS[w] = "?"
+    want = {}
+    for w, states in by_win.items():
+        st = rollup(states)
+        if st:
+            want[w] = st
+    wins = {f"{p[1]}:{p[6]}" for p in pl}
+    for w in [k for k in set(_TABS) | set(want) if k != "_swept"]:
+        if w not in wins:                           # window gone with its options
+            _TABS.pop(w, None)
+            continue
+        st = want.get(w)
+        if _TABS.get(w) == st:
+            continue
+        if st:
+            subprocess.run(tmx("set", "-w", "-t", w, "@sessionview_glyph", TAB_CH[st]))
+            subprocess.run(tmx("set", "-w", "-t", w, "@sessionview_glyph_fg", TAB_FG[st]))
+            _TABS[w] = st
+        else:
+            subprocess.run(tmx("set", "-w", "-t", w, "-u", "@sessionview_glyph"))
+            subprocess.run(tmx("set", "-w", "-t", w, "-u", "@sessionview_glyph_fg"))
+            _TABS.pop(w, None)
+
+def tab_clear():
+    for w in [k for k in _TABS if k != "_swept"]:
+        subprocess.run(tmx("set", "-w", "-t", w, "-u", "@sessionview_glyph"))
+        subprocess.run(tmx("set", "-w", "-t", w, "-u", "@sessionview_glyph_fg"))
+    _TABS.clear()
+
+def sort_key(a, keys=None):
+    """A row's place by the `sort` config (KEYS, default CFG["sort"]): status
+    rank, then idle, as configured. Pins are not in here; see order_agents."""
+    key = []
+    for k in (CFG["sort"] if keys is None else keys):
+        if k == "rank":
+            key.append(RANK.get(a.get("status"), 9))
+        else:
+            v = a.get(k)
+            key.append(v if v is not None else (0 if k.endswith("_s") else ""))
+    return tuple(key)
+
+# `pinned_agents` orders the LIVE agents list too, not only the picker
+# (ONE list; pinned means pinned
+# everywhere). In the grouped view the pinned rows are a block of their own
+# ABOVE every group, keyed by this sentinel group.
+PIN_GROUP = "\0pinned"
+# The heading drawn over that block in the grouped view; None = no heading
+# row, the pinned rows sit straight above the first group's heading. The ONE
+# place this choice lives (default no header).
+PIN_HEADING = None
+
+def pin_rank(pinned):
+    """{agent name: its position in PINNED}; a name listed twice keeps its
+    first place. An unpinned row ranks len(PINNED), after every pin."""
+    out = {}
+    for i, n in enumerate(pinned or []):
+        out.setdefault(n, i)
+    return out
+
+# In the grouped view a row drawn under its own group's header drops
+# the `<group>+` the header already shows from the start of the name, and
+# a group's rows sort by that short name, so a
+# task's seats sit together, ordered by task id.
+# Display only: `agent`, `name`, targets, menus and dup detection never see it.
+_TASK_SEG = re.compile(r"^([a-z][a-z0-9]*)-(\d+)$", re.I)
+_ROLE_RANK = {"foreman": 0, "worker": 1}
+
+def short_name(name, grp):
+    """NAME without its `<session>+` prefix, pure. SESSION is GRP, or for a
+    remote group `host:session` the part after `host:` (`devbox:sessionview`
+    strips `sessionview+`). Only when GRP
+    is a real group (not None, not PIN_GROUP), NAME starts with exactly
+    `SESSION + "+"` (whole prefix, case counts: the header text really is the
+    prefix) and something is left after the `+`. Anything else - ungrouped,
+    the pinned block, another project's name, legacy `foreman.AB-92`, a row
+    named exactly `sessionview`, a remote session part that differs - comes
+    back unchanged, as does a non-string GRP (group_by=<field> on an int
+    field such as `pid` groups by its value; there is no prefix to drop)."""
+    if not name or not isinstance(grp, str) or not grp or grp == PIN_GROUP:
+        return name
+    pre = grp.rpartition(":")[2] + "+"   # tmux session names never hold ":"
+    if len(pre) > 1 and name.startswith(pre) and len(name) > len(pre):
+        return name[len(pre):]
+    return name
+
+def name_key(a, grp):
+    """Row A's place inside its group GRP, pure. Only a row whose name
+    short_name() actually strips sorts by that short name: seats with no
+    task first (`super` leading - top of the chain - then the rest by
+    name), then task seats by task
+    id in NATURAL order (ab-92 before ab-104), foreman before workers within
+    a task. A task seat is one whose first dot-segment is `<word>-<number>`.
+    Every other row (legacy `foreman.AB-92`, plain `alice`, another project's
+    seat) keys `(1,)`: after the stripped rows, tied, so the stable sort
+    keeps CFG["sort"] order among them."""
+    n = a.get("name") or a.get("agent") or ""
+    s = short_name(n, grp)
+    if s == n:
+        return (1,)
+    head, _, rest = s.partition(".")
+    m = _TASK_SEG.match(head)
+    if not m:
+        return (0, 0, 0 if head == "super" else 1, s)
+    role = rest.partition(".")[0]
+    return (0, 1, m.group(1).lower(), int(m.group(2)), _ROLE_RANK.get(role, 2), rest)
+
+def order_agents(ag, pinned=(), keys=None, grp_of=None, group_order=None, within=None):
+    """The live agents list in display order, pure: AG is not changed.
+
+    Pinned rows (the row's `agent` name is in PINNED) lead, in pin order,
+    whatever their project, status or idle; the rest follow by sort_key(KEYS).
+    GRP_OF given (the grouped view): rows are then grouped, the groups in
+    GROUP_ORDER ({group: position}; unknown groups after, by name), and a
+    pinned row's group is PIN_GROUP, ordered before every group. Both sorts
+    are stable, so the order within a group (and within the pinned block)
+    is the first sort's. WITHIN given too: a non-pinned row's key
+    inside its group is WITHIN(row), ties keeping the first sort's order;
+    the pinned block keeps its pin order. Filtering (hide, current) is the
+    caller's, BEFORE this: a pin orders a row, it never unhides one."""
+    pins = pin_rank(pinned)
+    def pin(a):
+        return pins.get(a.get("agent"), len(pins))
+    out = sorted(ag, key=lambda a: (pin(a),) + sort_key(a, keys))
+    if grp_of is not None:
+        order = group_order or {}
+        def gkey(a):
+            if pin(a) < len(pins):
+                return (-1, "")
+            g = grp_of(a)
+            k = (order.get(g, len(order)), g)
+            return k + (within(a),) if within is not None else k
+        out.sort(key=gkey)
+    return out
+
+def rollup(states):
+    return min(states, key=lambda s: RANK.get(s, 9)) if states else None
+
+def fmt_idle(idle):
+    return (f"{idle//3600}h" if idle >= 3600 else
+            f"{idle//60}m" if idle >= 60 else f"{idle}s")
+
+def current_session():
+    """The session the frame client is looking at -- that is what 'selected'
+    means here, not whichever client tmux touched last."""
+    out = sh(tmx("list-clients", "-F",
+              "#{client_tty}\t#{session_name}\t#{client_activity}"))
+    rows = [l.split("\t") for l in out.splitlines() if l.count("\t") == 2]
+    # THIS frame's client first (SESSIONVIEW_PIN, as client_where reads it): with more
+    # than one frame open the global pin is another frame's, and the fallback
+    # "most recently active client" made the selected row follow whichever
+    # frame was touched last (seen with three frames open; with one frame
+    # it never shows).
+    pin = os.environ.get("SESSIONVIEW_PIN") or state("frame.tty")
+    if os.path.exists(pin):
+        want = open(pin).read().strip()
+        for tty_, sess, _ in rows:
+            if tty_ == want:
+                return sess
+    return max(rows, key=lambda r: r[2])[1] if rows else ""
+
+# ---- render -----------------------------------------------------------------
+def render_base(height=None):
+    """Return (lines, targets): targets[row0] = (kind, value)."""
+    if height is None:
+        try:
+            height = os.get_terminal_size().lines
+        except OSError:
+            height = 40
+    pl = panes()
+    p2s = {p[0]: p[1] for p in pl}
+    p2w = {p[0]: p[2] for p in pl}
+    cur_sess = current_session()
+    cur_pane = next((p[0] for p in pl
+                     if p[1] == cur_sess and p[3] == "1" and p[4] == "1"), "")
+    sess_path = {p[1]: p[5] for p in pl if p[3] == "1" and p[4] == "1"}
+
+    ag = agents()
+    by_sess, by_win = {}, {}
+    p2i = {p[0]: p[6] for p in pl}
+    pid2pane = {p[7]: p[0] for p in pl if len(p) > 7}
+    # session-list >= 2.1.273 names the SERVER with the
+    # pane: `tmux_socket` is the -L name, the same word SOCK holds. A seat that
+    # carries it is placed by that pair and the ps walk below is not run for it.
+    # The walk stays for a seat without the field - an older session list, on
+    # this host or a remote one - because pane ids collide across servers and a
+    # bare id is a pointer into the wrong one (this walk once hid that
+    # bug for a week; it is now the fallback, not the way).
+    # Which servers are LIVE is sessiontools' answer, not ours: `session list`
+    # finds each seat's server with a knock that skips dead socket files.
+    # The sidebar used to walk the socket dir itself and fork
+    # list-panes per FILE: 622 files and 3 servers on one machine made one render
+    # 3.4-4.0 s and a store pick 3-4 s (measured). Now it asks only the
+    # servers a seat names, once a render.
+    parents = ppids() if any(a.get("pid") and not a.get("_host") and not a.get("tmux_socket")
+                             for a in ag) else {}
+    named = {}                      # {socket: panes(socket)}: only servers a seat names, once a render
+    for a in ag:
+        sock = a.get("tmux_socket")
+        if sock and not a.get("_host"):
+            pane = a.get("tmux_pane") or ""
+            if sock == SOCK:
+                a["tmux_pane"] = pane if pane in p2s else ""
+            else:                   # on another store's server: the view follows the click
+                a["tmux_pane"] = ""
+                if pane:
+                    if sock not in named:
+                        named[sock] = panes(sock)
+                    fl = named[sock]
+                    a["_xsock"], a["_xpane"] = sock, pane
+                    a["_xwin"] = next((q[2] for q in fl if q[0] == pane), "")
+        elif parents and a.get("pid") and not a.get("_host"):
+            # Placed by pid ancestry on the VIEWED server, never by the pane id
+            # `session list` reports: it resolves ids on ONE server and ids are
+            # per server, so they collide - measured: alice
+            # %4 and bob %3 on default while a store's server had a %4
+            # (demo:2 project) and a %3 (demo:1 git). Viewing that store,
+            # both rows sat in demo and a click on alice went to a project
+            # pane there, when a click on an agent should go to the
+            # agent's store.
+            # On the VIEWED server only. Finding it on another server meant
+            # walking every socket file ourselves (above); a session list that
+            # names the server (>= 2.1.273) is the way across servers.
+            a["tmux_pane"] = pane_of_pid(a.get("pid"), pid2pane, parents)
+        elif a.get("tmux_pane") and a["tmux_pane"] not in p2s:   # no pid or no ps: the old trust
+            a["tmux_pane"] = ""
+        pane = a.get("tmux_pane") or ""
+        s = p2s.get(pane)
+        if s:
+            by_sess.setdefault(s, []).append(a.get("status", ""))
+            by_win.setdefault(f"{s}:{p2i[pane]}", []).append(a.get("status", ""))
+    tab_glyphs(by_win, pl)                                            # the tab-bar glyphs
+
+    lines, targets = [], {}
+    def put(text, target=None, selected=False):
+        if target:
+            targets[len(lines)] = target
+        lines.append(row(text, selected))
+
+    two_p = bool(CFG.get("project_two_line", CFG.get("two_line", False)))
+    # Always compact, the selected one expanded: every project is one line; the SELECTED one
+    # grows its second line (project_format2). project_two_line = true still
+    # gives herdr's two lines for all.
+    expand_sel = bool(CFG.get("project_expand_selected", True))
+    two_a = bool(CFG.get("agent_two_line", CFG.get("two_line", False)))
+
+    # -- the store name IS the switcher (no "spaces" heading) ------------------
+    srec = row_store()
+    store = store_name(srec) or active_store() or "tmux"
+    # The session the store row opens, resolved against the sessions
+    # this render already holds (no extra tmux call). It is hidden from the
+    # project rows - exactly it, nothing else - and the
+    # store row is the selected row while the client is on it.
+    live_sessions = sessions()
+    ssess, sexists = store_session(srec, {n for n, _, _ in live_sessions}) if srec else ("", False)
+    hide_sess = ssess if sexists else ""
+    # The sidebar icon at the header's TOP LEFT - the box with the divider
+    # (a screen with a vertical line in the middle) that every sidebar uses
+    # for minimise/expand. One glyph
+    # both ways: the icon does not change, the bar does. The store name
+    # follows it, as before. tmux's own hide button (sidebar-toggle) stays.
+    # Row 1: the icon and the name of the thing - "sessionview", dim, so a
+    # screenshot says what it is; the store goes below it.
+    # Only the ICON toggles: a click on the store name once moved the bar.
+    put(" " + C_DIM + "\u25eb" + NOFG + " " + C_DIM + CFG.get("brand", "sessionview") + NOFG,
+        ("width-toggle", 3))                          # 3 = the icon's last column
+    put("")                                           # air under the brand, none under the store
+    # The user's own mail, above the store row - it belongs to no store.
+    # Its session is hidden from the project rows only while the row is drawn,
+    # so turning the row off never leaves a session nobody can click.
+    umail = user_mail_row()
+    umsock, umname = umail or ("", "")
+    if umail:
+        usel = SOCK == umsock and cur_sess == umname
+        put(paint(lay(CFG.get("user_mail_format", " ✉ mail"), WIDTH, chrome=True), usel),
+            ("user-mail", umail), usel)
+    # Row 2: the store, bold, its own row again. Its NAME opens the store's
+    # session and store view (open_store); the dots after it open the
+    # Switch store modal (switch_store_menu); a right-click anywhere on it is
+    # the STORE menu (Kick = the general contractor, from the taskmaster
+    # plugin). store_row_dispatch splits the click.
+    srow = lay(CFG["store_format"].format_map(_Safe(store=store)), WIDTH, chrome=True)
+    srow = srow.rstrip(" ") + " " + C_DIM + "\u22ef" + NOFG
+    x0 = ANSI_RE.sub("", srow).index("\u22ef") + 1
+    ssel = bool(hide_sess) and cur_sess == hide_sess
+    put(C_SEL + "\033[1m" + srow + "\033[22m" + NOFG, ("store-dots", (store, x0)), ssel)
+
+    if PICKER is not None:                                  # the one picker
+        render_picker(put, len(lines), height)
+        return pad_to(lines, targets, height)
+
+    # -- PROJECTS: one tmux session each, two lines, no heading ---------------
+    if CFG.get("show_spaces", True):
+        for name, nwin, att in live_sessions:
+            if name in CFG.get("remotes", []):      # a host's attach session: its row is the host line
+                continue
+            if name == hide_sess:                   # the store row IS this session
+                continue
+            if SOCK == umsock and name == umname:   # ... and the mail row is this one
+                continue
+            st = rollup(by_sess.get(name, []))
+            g = GLYPH.get(st, " ") if st else " "
+            sel = (name == cur_sess)
+            if SELECT_SESSION and name == SELECT_SESSION:   # measurement hook
+                sel = True
+            ppath = sess_path.get(name, os.path.expanduser("~"))
+            repo, branch, git, braw, dflt = git_where(ppath)
+            ready, ready_n = project_ready(name, ppath, dflt) if "{ready" in CFG["project_format"] else ("", 0)
+            f = _Safe(name=name, glyph=g, windows=nwin, attached=att,
+                      repo=repo, branch=branch, git=git, branch_raw=braw, default=dflt,
+                      ready=ready, ready_n=ready_n)
+            if sel:
+                # The SELECTED row carries its menu: three dots at the far
+                # right, dim like the tab X, in place of a "menu" word. The touch path
+                # to what right-click already opens; one glyph, on the one
+                # row it belongs to, not a floating word on the middle row.
+                # ... and the dots now sit right AFTER THE NAME, as on the
+                # agent row and the store row, for consistency.
+                fd = dict(f); fd["name"] = f["name"] + " " + C_DIM + "\u22ef" + NOFG
+                try:
+                    t = lay(CFG["project_format"].format_map(_Safe(fd)), WIDTH, keep_right=True)
+                except (ValueError, KeyError):
+                    t = lay(CFG["project_format"].format_map(f), WIDTH, keep_right=True)
+                plain = ANSI_RE.sub("", t)
+                x0 = plain.index("\u22ef") + 1 if "\u22ef" in plain else 0
+                ready_col(name, plain, ready)
+                put(paint(t, sel), ("session-dots", (name, x0)), sel)
+            else:
+                t = lay(CFG["project_format"].format_map(f), WIDTH, keep_right=True)
+                ready_col(name, ANSI_RE.sub("", t), ready)
+                put(paint(t, sel), ("session", name), sel)   # selected: brighter and bold
+            if two_p or (sel and expand_sel):
+                f2 = _Safe(name=name, repo=repo, branch=branch, windows=nwin, git=git,
+                           branch_raw=braw, default=dflt, ready=ready, ready_n=ready_n)
+                put((C_BRANCH if sel else C_DIM)
+                    + lay(CFG["project_format2"].format_map(f2), WIDTH) + NOFG,
+                    ("session", name), sel)
+            for _ in range(int(CFG.get("project_gap", 0) or 0)):   # touch targets apart
+                put("")
+
+    # -- REMOTE projects: a divider (only when remotes are configured), then per
+    # host a dim host line and its sessions at the SAME indent as local ones.
+    # Local is the default; a small divider tells local from remote, with no
+    # extra level of indentation; with no remotes, none of it shows.
+    if CFG.get("remotes", []) and CFG.get("remote_heading", " remote"):
+        put("")                                           # air before the remote section
+        put(C_DIM + lay(CFG.get("remote_heading", " remote"), WIDTH, chrome=True) + NOFG)
+    for host in CFG.get("remotes", []):
+        R = REMOTE.get(host)
+        if R is None:
+            put(C_DIM + lay(f" {host}\t…", WIDTH) + NOFG)
+            continue
+        if not R["ok"] and not R["sessions"]:
+            put(C_DIM + lay(f" {host}\t{R.get('err') or 'unreachable'} ", WIDTH) + NOFG)
+            continue
+        hsel = (host == cur_sess)
+        hwin = (sh(["tmux", "display-message", "-p", "-t", "=" + host, "#{window_name}"]).strip()
+                if hsel else "")
+        put(paint(lay(f" {host}", WIDTH), hsel) if hsel else C_DIM + lay(f" {host}", WIDTH) + NOFG,
+            ("session", host) if hsel else None, hsel)
+        rby = {}
+        for a in R["agents"]:
+            sname = R["p2s"].get(a.get("tmux_pane") or "")
+            if sname:
+                rby.setdefault(sname, []).append(a.get("status", ""))
+        for name, nwin, att in R["sessions"]:
+            st = rollup(rby.get(name, []))
+            g = GLYPH.get(st, " ") if st else " "
+            rsel = hsel and name == hwin
+            put(paint(lay(f" {g} {name}", WIDTH), rsel) if rsel else C_NAME + lay(f" {g} {name}", WIDTH) + NOFG,
+                ("rsession", (host, name)), rsel)
+            for _ in range(int(CFG.get("project_gap", 0) or 0)):
+                put("")
+    # -- the agent rows, decided BEFORE the layout so overflow can be measured --
+    hide = set(CFG.get("hide", []))
+    ag = [a for a in ag if a.get("status") not in hide]
+    for host in CFG.get("remotes", []):
+        R = REMOTE.get(host) or {}
+        for a in R.get("agents", []):
+            if a.get("status") in hide:
+                continue
+            pane = a.get("tmux_pane") or ""
+            ag.append(dict(a, _host=host, _window=R.get("p2w", {}).get(pane, ""),
+                           _session=R.get("p2s", {}).get(pane, "")))
+    if FILTER == "current":
+        ag = [a for a in ag if p2s.get(a.get("tmux_pane") or "") == cur_sess]
+    gb = CFG.get("group_by", "none") if not GROUPED else (
+         CFG.get("group_by", "none") if CFG.get("group_by", "none") != "none" else "session")
+    if not GROUPED:
+        gb = "none"
+    pins = pin_rank(CFG.get("pinned_agents"))
+    def own_grp(a):
+        if a.get("_host") and gb == "session":
+            return f"{a['_host']}:{a.get('_session') or '-'}"
+        return (p2s.get(a.get("tmux_pane") or "") if gb == "session" else a.get(gb)) or "-"
+    def grp_of(a):                       # a pinned row's group is the block above them all
+        if gb == "none":
+            return None
+        return PIN_GROUP if a.get("agent") in pins else own_grp(a)
+    # pinned first, in pin order; then CFG["sort"]; grouped: by group (project
+    # order), then by short name inside a group, stable, so rank
+    # order breaks ties
+    ag = order_agents(ag, CFG.get("pinned_agents"), CFG["sort"],
+                      own_grp if gb != "none" else None,
+                      {name: i for i, (name, _, _) in enumerate(sessions())} if gb != "none" else None,
+                      (lambda a: name_key(a, own_grp(a))) if gb != "none" else None)
+    def heads(g):                        # heading rows a group costs: the pinned block's may be none
+        return 0 if g == PIN_GROUP and PIN_HEADING is None else 1
+    n_groups = sum(heads(g) for g in {grp_of(a) for a in ag}) if gb != "none" else 0
+    need = len(ag) * (2 if two_a else 1) + n_groups
+
+    # -- new / menu, then agents: the BOTTOM half, or higher when they need it --
+    fixed = 4                                        # new/menu, blank, heading, blank
+    mid = max(len(lines) + 1, min(height // 2 - 2, height - 1 - fixed - need))
+    while len(lines) < mid:
+        lines.append(row(""))
+    spec = CFG["mid_format"]
+    left, right = (spec.split("\t", 1) + [""])[:2]
+    targets[len(lines)] = ("new-or-menu", (vislen(left), WIDTH - vislen(right) if right else WIDTH + 1))
+    lines.append(row(C_DIM + lay(spec, WIDTH, chrome=True) + NOFG))
+    put("")
+    # heading: "<left from config>      all · grouped" -- each word a toggle,
+    # lit when on: show all, or show current
+    hl = (CFG["agents_heading"].split("\t", 1) + [""])[0]
+    filt = "current" if FILTER == "current" else "all"
+    r_filt = (C_SEL if FILTER == "current" else C_DIM) + filt + C_DIM
+    r_grp = (C_SEL if GROUPED else C_DIM) + "grouped" + C_DIM
+    rtxt = f"{filt} \u00b7 grouped "
+    x_right = WIDTH - len(rtxt)
+    targets[len(lines)] = ("agents-head", (x_right, x_right + len(filt) + 2))
+    lines.append(row(C_DIM + lay(hl + "\t" + r_filt + " \u00b7 " + r_grp + " ", WIDTH, chrome=True) + NOFG))
+    put("")
+
+    room = height - 1 - len(lines)                   # rows left above the chevron
+    shown, used, last_group = [], 0, object()
+    for a in ag:
+        cost = (2 if two_a else 1) + (heads(grp_of(a)) if gb != "none" and grp_of(a) != last_group else 0)
+        if used + cost > room - (1 if len(shown) < len(ag) - 1 else 0):
+            break
+        shown.append(a); used += cost
+        if gb != "none":
+            last_group = grp_of(a)
+    if len(shown) < len(ag) and room >= 1 and shown:
+        shown = shown[:-1] if used >= room else shown   # keep one row for "+N more"
+    last_group = object()
+    seen = [x.get("agent") for x in ag if x.get("agent")]
+    dups = {n for n in seen if seen.count(n) > 1}      # {label}: plain name unless two rows share it
+    model_w = max((len(short_model(x.get("context_model"))) for x in shown), default=0)
+    for a in shown:
+        pane = a.get("tmux_pane") or ""
+        if gb != "none":
+            grp = grp_of(a)
+            if grp != last_group:
+                if grp != PIN_GROUP:
+                    put(C_DIM + lay(CFG["group_format"].format_map(_Safe(group=grp)), WIDTH) + NOFG)
+                elif PIN_HEADING is not None:
+                    put(C_DIM + lay(PIN_HEADING, WIDTH) + NOFG)
+                last_group = grp
+        sel = bool(pane) and pane == cur_pane
+        if SELECT_AGENT and a.get("agent") == SELECT_AGENT:   # measurement hook: a selected row on demand
+            sel = True
+        # An agent OUTSIDE tmux (Terminal.app, a bare Ghostty) has no pane, and
+        # a row with no target could not be right-clicked at all: an agent
+        # in tmux had a menu and one outside it did not. So it
+        # gets an id target instead: the menu opens, only Jump to is greyed.
+        if a.get("_host"):
+            tgt = ("rpane", a) if pane else ("ragent", a)
+        elif a.get("_xsock"):          # on another store's server: the view follows the click
+            tgt = ("xpane", (a["_xsock"], a["_xpane"], a.get("session_id") or ""))
+        else:
+            tgt = ("pane", pane) if pane else ("agent", a.get("session_id") or "")
+        f = agent_fields(a, a.get("_window", "") if a.get("_host") else
+                         (p2w.get(pane, "") or a.get("_xwin", "")), dups, model_w)
+        if gb != "none":                 # the header already shows `<group>+`
+            f["label"] = short_name(f["label"], grp_of(a))
+        try:
+            l1 = lay(CFG["agent_format"].format_map(f), WIDTH)
+            l2 = lay(CFG["agent_format2"].format_map(f), WIDTH) if two_a else None
+        except (ValueError, KeyError) as e:
+            l1, l2 = f" ! bad agent_format: {e}", None
+        if sel:
+            # The SELECTED agent row carries its menu as three dots RIGHT AFTER
+            # THE NAME - the touch path to what right-click opens, for a
+            # tablet: a left click on a menu glyph. Not at the far
+            # right like the project row: there they pushed the model and
+            # context columns two to the left on the one selected row, so
+            # the dots follow the agent's name. A first tap on any agent row
+            # jumps, which selects it and shows the dots; the second tap on the
+            # dots opens the menu.
+            fd = dict(f); fd["label"] = f["label"] + " " + C_DIM + "\u22ef" + NOFG
+            try:
+                l1 = lay(CFG["agent_format"].format_map(_Safe(fd)), WIDTH)
+            except (ValueError, KeyError):
+                l1 = lay(CFG["agent_format"].format_map(f), WIDTH)
+            plain = ANSI_RE.sub("", l1)
+            x0 = plain.index("\u22ef") + 1 if "\u22ef" in plain else 0    # 1-based column of the dots
+            put(paint(l1, sel), ("pane-dots", (tgt, x0)), sel)
+        else:
+            put(paint(l1, sel), tgt, sel)                                # selected: brighter and bold
+        if l2 is not None:
+            put((C_BRANCH if sel else C_DIMMER) + l2 + NOFG, tgt, sel)
+        for _ in range(int(CFG.get("agent_gap", 0) or 0)):   # the space between the lines, adjustable
+            put("")
+    if len(shown) < len(ag):
+        put(C_DIM + lay(f"   +{len(ag) - len(shown)} more", WIDTH, chrome=True) + NOFG)
+    out = pad_to(lines, targets, height)
+    LAST_TARGETS.clear(); LAST_TARGETS.update(out[1])
+    return out
+
+def open_agent_plus():
+    """The + under agents: the picker over the launcher's own agent list
+    (registered_agents asks `session start --list-agents`), so there is no
+    name to guess - and, with the one picker, no name to type out either:
+    a few letters, enter.
+    A pick runs sessionview-autostart --start (start_agent)."""
+    open_picker("agents", current_session())
+
+def switch_store_menu():
+    """The store row's ⋯, and `s`: the "Switch store" modal. An overlay
+    MENU, so the sidebar stays as
+    it was underneath; it replaces MODE = "stores", which swapped the whole
+    sidebar for a store list. One item per store, in stores() order, the
+    viewed one under the cursor; the right column is the old list's badge,
+    x<sessions> when live, blank when down (down needs no word of its
+    own). No letter keys: store names
+    share initials. A pick is the store-open builtin = open_store, the same
+    path as a click on the name. Switching only: Kick stays on right-click."""
+    global MENU, PROMPT
+    anchor = ANCHOR if ANCHOR is not None else store_row()   # `s`: beside the store row
+    items, cur = [], None
+    for s in stores():
+        if cur is None and (s.get("socket") or "default") == SOCK:
+            cur = len(items)                 # the viewed store: under the cursor
+        items.append((store_name(s), f"x{s.get('session_count', 0)}" if s.get("live") else "",
+                      {"a": {"id": "store-open", "builtin": "store-open", "store": store_name(s)},
+                       "plug": BUILTIN, "ctx": {}}))
+    if not items:                          # say why, never an empty picker
+        items = [(stores_why() or "no stores", "", None)]
+    PROMPT = None
+    MENU = {"title": "Switch store", "items": items, "cur": cur or 0, "anchor": anchor}
+
+def store_row():
+    """The store row's line index in the last render (its `store-dots`
+    target), or None when none was drawn: where `s` anchors Switch store."""
+    return next((k for k, t in sorted(LAST_TARGETS.items()) if t and t[0] == "store-dots"), None)
+
+# THE SIDEBAR ALPHABET - one letter, one action, anywhere in the sidebar.
+# A letter is claimed in config/keys.md BEFORE it is bound here; the key is
+# the lowercase letter (q reload / Q quit is the precedent for a loud twin).
+# Global, not focused (there is no "which half" without a click, so no
+# focus to hang a letter off). An overlay - prompt,
+# menu, picker - owns the keyboard while it is open, so these are dead inside
+# one: the gate in the main loop, not a rule of each key.
+def help_keys():
+    """`?`: the alphabet, in the note panel. Read from config/keys.md - the
+    file a letter is claimed in - so what help says and what is bound cannot
+    drift apart; a checkout without the note gets the bound letters bare.
+    Also `Keys` in the row menu, for the clicky people: a letter for help,
+    and a menu item for those who never type it."""
+    pairs = []
+    try:
+        with open(os.path.join(SESSIONVIEW_ROOT, "config", "keys.md")) as fh:
+            for line in fh:
+                m = re.match(r"- (\S+) - ([\w-]+):", line)
+                if m:
+                    pairs.append(m.groups())
+    except OSError:
+        pass
+    if not pairs:
+        pairs = [(k, getattr(v, "__name__", "?").replace("_", " ")) for k, v in KEYS.items()]
+    note(" \u00b7 ".join(f"{k} {w}" for k, w in pairs), title="keys")
+
+KEYS = {
+    "a": open_agent_plus,                   # agent: start one (the ` +` strip)
+    "p": lambda: open_picker("sessions"),   # project: open one (the `new`)
+    "s": switch_store_menu,                 # store: Switch store, as the store row's ⋯ does
+    "?": help_keys,                         # keys: this list, in the panel
+    "w": lambda: toggle_width(),            # wide: flip narrow <-> wide (the chevron's key)
+}
+
+def toggle_width():
+    """The chevron, and `w`. Manual by default: flip `fit` between narrow and
+    fixed and REMEMBER it, so the bar opens how you left it, as a chat
+    app's sidebar does: it opens how you had it last time, and a click on
+    the control at the top makes it smaller. Under `fit: focus` (auto, an option) the same
+    chevron pins the bar wide, and again releases it to follow focus."""
+    mode = str(CFG.get("fit", "fixed"))
+    if mode == "focus":
+        FOCUS["pin"] = not FOCUS["pin"]
+        return
+    CFG["fit"] = "fixed" if mode == "narrow" else "narrow"
+    subprocess.run([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config"),
+                    "set", "fit", CFG["fit"]], capture_output=True)
+
+def pad_to(lines, targets, height):
+    """Fill to the pane bottom; the LAST ROW is the control strip: ` +` on the
+    left starts an agent, the collapse chevron (when configured) on the right.
+
+    The + lives on the bottom edge of the window, not under the last
+    agent. A control that moves when the list grows is a control you
+    have to look for; the tab bar's + is pinned right for the same reason.
+    Same two-target row as new/menu: the click is split by x."""
+    while len(lines) < height - 1:
+        lines.append(row(""))
+    lines = lines[:height - 1]
+    targets = {k: v for k, v in targets.items() if k < height - 1}
+    chev = CFG.get("collapse", "")
+    left = " +"
+    right = (chev + " ") if chev else ""
+    targets[len(lines)] = ("plus-or-collapse", (vislen(left), WIDTH - vislen(right) if right else WIDTH + 1))
+    lines.append(row(C_DIM + lay(left + "\t" + right, WIDTH, chrome=True) + NOFG))
+    return lines, targets
+
+# ---- actions ----------------------------------------------------------------
+_CLIENT = {}
+def client_where():
+    """(socket, tty) of the sessionview client -- the one a click should move.
+    Inside tmux: this pane's client, on the server in $TMUX. Outside (a
+    Ghostty split): the PINNED tty (frame.tty), looked for on EVERY
+    known server -- it was once looked for on `default`
+    only, while the pin sat on a store's server attached to demo
+    (measured), so the sessionview client was never found and a click on any
+    other store's session was refused as view-only, when a click on a
+    tmux session should simply work. Falls back to the most recently
+    active client on the plain socket. Cached 5s; a move clears it."""
+    now = time.time()
+    if _CLIENT.get("t") and now - _CLIENT["t"] < 5:
+        return _CLIENT["v"]
+    v = ("default", "")
+    if POPUP:
+        # Only the popup is truly INSIDE a tmux pane. A Ghostty surface can
+        # carry $TMUX too -- inherited from the shell that ran `sessionview` -- and
+        # trusting it asked THAT server for "the current client", which was
+        # one of the user's other terminals: a click on
+        # demo switched a different window, focusing it in
+        # another terminal.
+        me = sh(["tmux", "display-message", "-p", "#{client_tty}"]).strip()
+        v = (attached_socket(), me)
+    else:
+        pin = os.environ.get("SESSIONVIEW_PIN") or state("frame.tty")   # sessionview-frame: its own pin
+        tty_ = open(pin).read().strip() if os.path.exists(pin) else ""
+        socks = ["default"] + [s.get("socket") for s in stores() if s.get("socket")]
+        found = ""
+        for sock in socks:
+            out = sh(["tmux", "-L", sock, "list-clients", "-F", "#{client_tty}"])
+            if tty_ and tty_ in out.split():
+                found = sock
+                break
+        if found:
+            v = (found, tty_)
+        else:
+            out = sh(["tmux", "-L", "default", "list-clients", "-F", "#{client_activity}\t#{client_tty}"])
+            rows = sorted((l.split("\t") for l in out.splitlines() if "\t" in l), reverse=True)
+            v = ("default", rows[0][1] if rows else "")
+    _CLIENT.update(t=now, v=v)
+    return v
+
+def focus_main():
+    """Hand the KEYBOARD to the right-hand pane of the frame - the one the
+    inner session (and whatever we just opened in it) is showing in.
+
+    Opened from the menu, Settings needs the focus: it says the arrows
+    work, and they must. A new-window in the INNER
+    session makes that window current there, but the cursor is in the
+    sidebar - a pane of the OUTER frame - so every key the user presses lands
+    here, where j/k mean nothing. The frame lays out 0.0 = sidebar,
+    0.1 = the client of the inner session (sessionview-frame:118,140);
+    selecting 0.1 on the outer server is the whole fix.
+
+    Not under the frame (no SESSIONVIEW_FRAME): nothing to do - a bare sidebar
+    in a plain tmux has no "other pane" of its own to name."""
+    frame = os.environ.get("SESSIONVIEW_FRAME", "")
+    if not frame or ":" not in frame:
+        return
+    fsock, fsess = frame.split(":", 1)
+    subprocess.run(["tmux", "-L", fsock, "select-pane", "-t", frame_pane(frame, "main")],
+                   capture_output=True)
+
+def frame_pane(frame, which):
+    """The frame's own name for one of its two panes - a tmux PANE ID (%N).
+
+    sessionview-frame publishes `@sessionview_side_pane` and `@sessionview_main_pane` on the
+    frame session. We ask it rather than counting, because `0.0` and `0.1` are
+    POSITIONS: on a live frame here the client sat at index 0 and the sidebar
+    at index 1, and every index-addressed call then hit the wrong pane - the
+    width hook squeezed the CLIENT to the sidebar's width and gave the sidebar
+    the rest of the terminal (a new user saw the whole screen as the
+    sidebar).
+
+    Falls back to the old index for a frame started before this shipped, so a
+    running frame does not have to be restarted to keep working."""
+    fsock, fsess = frame.split(":", 1)
+    opt = "@sessionview_side_pane" if which == "side" else "@sessionview_main_pane"
+    # session options take a PLAIN session name: `-t =NAME` is "no such session"
+    v = sh(["tmux", "-L", fsock, "show-options", "-v", "-t", fsess, opt]).strip()
+    return v or ("=" + fsess + (":0.0" if which == "side" else ":0.1"))
+
+def frame_pane_alive(frame, tty_):
+    fsock, fsess = frame.split(":", 1)
+    out = sh(["tmux", "-L", fsock, "list-panes", "-t", "=" + fsess, "-F", "#{pane_tty}"])
+    return tty_ in out.split()
+
+def frame_attach(frame, sock, session):
+    """sessionview-frame: (re)create the right pane as a client of SESSION on SOCK,
+    pin its tty. Used when the frame has no live client pane (its session
+    ended, or first use)."""
+    fsock, fsess = frame.split(":", 1)
+    tmux_bin = shutil.which("tmux") or "tmux"
+    side = frame_pane(frame, "side")
+    main = sh(["tmux", "-L", fsock, "split-window", "-h", "-P", "-F", "#{pane_id}",
+               "-t", side, "-e", "TMUX=",
+               "exec " + shlex.quote(tmux_bin) + " -L " + shlex.quote(sock) + " attach -t =" + shlex.quote(session)]).strip()
+    if main:                      # the new pane names itself for next time
+        subprocess.run(["tmux", "-L", fsock, "set", "-t", fsess, "@sessionview_main_pane", main],
+                       capture_output=True)
+    else:
+        main = frame_pane(frame, "main")
+    subprocess.run(["tmux", "-L", fsock, "resize-pane", "-t", side, "-x", str(WIDTH)])
+    tty_ = sh(["tmux", "-L", fsock, "display-message", "-p", "-t", main, "#{pane_tty}"]).strip()
+    pin = os.environ.get("SESSIONVIEW_PIN")
+    if pin and tty_:
+        with open(pin, "w") as f:
+            f.write(tty_)
+    _CLIENT.clear()
+
+def move_client(sock, session):
+    """Show SESSION (on server SOCK) in the sessionview client. Same server:
+    switch-client. Another server: `detach-client -E` re-execs the client
+    as an attach on SOCK -- tmux cannot switch a client across servers, but
+    it can replace it (measured with tmux 3.7c: a pty
+    client on server A landed on B, same tty, A left empty). The client is
+    then on SOCK, so the cache is dropped and the next click finds it there."""
+    csock, tty_ = client_where()
+    frame = os.environ.get("SESSIONVIEW_FRAME", "")          # "SOCKET:session" of the outer server
+    if frame and (not tty_ or not frame_pane_alive(frame, tty_)):
+        return frame_attach(frame, sock, session)     # the right pane died: make it again
+    if not tty_:
+        return                     # no sessionview client known: never hijack someone else's
+    if csock == sock:
+        subprocess.run(["tmux", "-L", sock, "switch-client", "-c", tty_, "-t", "=" + session])
+    else:
+        # The client re-execs with ITS environment (Ghostty's login shell), so
+        # tmux is named by absolute path, not left to that PATH.
+        tmux_bin = shutil.which("tmux") or "tmux"
+        subprocess.run(["tmux", "-L", csock, "detach-client", "-t", tty_, "-E",
+                        "exec " + shlex.quote(tmux_bin) + " -L " + shlex.quote(sock)
+                        + " attach -t =" + shlex.quote(session)])
+    _CLIENT.clear()
+
+def apply_look(session):
+    """Give SESSION the sessionview bar (tabs on TOP). frame.conf is a session-scoped
+    snippet and ghostty-herd sourced it only for the session it attached at
+    launch -- so every other session kept the global bottom bar: no tabs at
+    the top, tabs at the bottom. Applied on JUMP, so a
+    session gets the look the moment the sessionview window looks at it, and main
+    outside the sessionview window is untouched. Idempotent: every line is a set."""
+    conf = os.path.join(SESSIONVIEW_ROOT, "tmux", "frame.conf")
+    if not session or not os.path.exists(conf):
+        return
+    # frame.conf says plain `tmux ...`; a shell function points every line at
+    # the VIEWED server (it was skipped whenever SOCK was not default, so a
+    # store's sessions never got the look).
+    subprocess.run(["sh", "-c", 'S="$1"; L="$3"; tmux() { command tmux -L "$L" "$@"; }; . "$2"',
+                    "sh", session, conf, SOCK],
+                   env=dict(os.environ, SESSIONVIEW_ROOT=SESSIONVIEW_ROOT))
+
+def jump(target):
+    global SOCK
+    kind, val = target
+    if kind == "rsession":
+        return remote_attach(*val)
+    if kind in ("rpane", "ragent"):
+        return remote_attach(val["_host"], val.get("_session") or "", val.get("tmux_pane") or "")
+    if kind == "xpane":
+        # A seat on ANOTHER store's server. The VIEW follows first - SOCK is
+        # that server from here on, so every tmx() below names it explicitly
+        # (nothing in this path may lean on "current": a jump to the wrong
+        # server is what that costs) - and then it is an ordinary pane jump.
+        SOCK, val = val[0], val[1]
+        kind = "pane"
+    if kind == "xsession":             # a session on a named server (the mail row)
+        SOCK, val = val
+        kind = "session"
+    # Any store's server: the client is MOVED there if it has to be
+    # (move_client); the old "view-only on another socket" refusal is gone.
+    sess = val if kind == "session" else \
+        sh(tmx("display-message", "-p", "-t", val, "#{session_name}")).strip()
+    if not sess:
+        return
+    apply_look(sess)
+    if kind == "pane":                 # select before the move: the attach shows it
+        subprocess.run(tmx("select-window", "-t", val))
+        subprocess.run(tmx("select-pane", "-t", val))
+    move_client(SOCK, sess)
+    if POPUP:                    # click, switch, popup closes
+        sys.exit(0)
+
+# ---- menu + prompt: drawn IN the sidebar ------------------------------------
+# They used to be `tmux display-menu` / `display-popup` on the sessionview CLIENT --
+# which paints in the TMUX pane, on the right. The mouse was in the sidebar, so
+# the menu appeared over there and every letter key went to the sidebar instead
+# (the rename, new tab, close menu came up in tmux, not in the sidebar).
+# So: menu, rename box and kill confirm all render as sidebar rows, and the
+# keys are read by the loop that already owns this keyboard. An item with no
+# action is greyed and unclickable -- that is how a not-yet-wired entry stays
+# honest. `q` still reloads and `Q` still quits, but NOT while a prompt is open
+# (you have to be able to type a q into a session name).
+
+# ---- menus built from manifests -------------------------------------------------
+PLUGIN_DIR = os.path.expanduser(os.environ.get("SESSIONVIEW_PLUGINS") or os.path.join(SESSIONVIEW_ROOT, "plugins"))
+BUILTIN = {"id": "builtin", "dir": "", "actions": [
+    {"id": "rename", "title": "Rename",    "key": "r", "contexts": ["project"], "builtin": "rename"},
+    {"id": "newtab", "title": "New tab",   "key": "n", "contexts": ["project"], "builtin": "newtab"},
+    {"id": "config", "title": "Config",    "key": "c", "contexts": ["project"], "builtin": "config"},
+    {"id": "settings", "title": "Settings", "key": "e", "contexts": ["project"], "builtin": "settings"},
+    # Settings: the little CONFIGURER (sessionview-config, no verb) - every key from
+    # the template with its note, its default and what it is now, editable in
+    # place. Config (c) still opens the raw JSON in $EDITOR; this is the one
+    # that writes for you, and can grow into a fuller configurer.
+    # Key `e`: in the PROJECT menu c, s, t, a, r, n and x are all taken.
+    # Config: opens the home file (`sessionview-config path`) in a new window of the current
+    # session, in the editor of choice.
+    {"id": "copy",   "title": "Copy name", "key": "c", "contexts": ["agent"],   "builtin": "copy"},
+    {"id": "close",  "title": "Close",     "key": "x", "contexts": ["project"], "builtin": "close"},
+    {"id": "jump",   "title": "Jump to",   "key": "g", "contexts": ["agent"],   "builtin": "jump",
+     "when": "agent.pane"},   # g, not j: j/k are the cursor keys; remote -> an ssh-attach tab
+    {"id": "keys",   "title": "Keys",      "key": "?", "contexts": ["project", "agent"], "builtin": "keys"},
+]}
+_PLUG = {}
+def plugins():
+    """[manifest dicts], cached 60s. A plugin whose `requires` are not
+    all present (a bare word = a command on PATH, a path = exists) is dropped
+    here and never seen again. A bad manifest is reported on stderr and
+    skipped, never fatal to the sidebar."""
+    import shutil
+    now = time.time()
+    if _PLUG.get("t") and now - _PLUG["t"] < 60:
+        return _PLUG["v"]
+    out = []
+    try:
+        names = sorted(os.listdir(PLUGIN_DIR))
+    except OSError:
+        names = []
+    for n in names:
+        d = os.path.join(PLUGIN_DIR, n)
+        f = os.path.join(d, "plugin.toml")
+        if not os.path.isfile(f):
+            continue
+        try:
+            with open(f, "rb") as fh:
+                m = tomllib.load(fh)
+        except Exception as e:
+            print(f"sidebar: plugin {n}: {e}", file=sys.stderr)
+            continue
+        req = m.get("requires", [])
+        if not all((os.path.exists(os.path.expanduser(r)) if "/" in r else shutil.which(r)) for r in req):
+            continue
+        m.setdefault("id", n); m["dir"] = d
+        out.append(m)
+    _PLUG.update(t=now, v=out)
+    return out
+
+_ARGV = {}
+def argv_of(pid):
+    """One ps per seat per menu open: voice/tm are read off the process's
+    own argv (measured: --plugin-dir .../voicemode marks a seat that
+    can speak; foremen and workers carry none)."""
+    if pid not in _ARGV:
+        _ARGV[pid] = sh(["ps", "-o", "command=", "-p", str(pid)]) if pid else ""
+    return _ARGV[pid]
+
+def ctx_agent(a, window=""):
+    pane = a.get("tmux_pane") or ""
+    argv = argv_of(a.get("pid")) if not a.get("_host") else ""
+    if a.get("_host"):
+        a = dict(a, session_id="", short="")      # no cross-host address in v1 -> greyed
+    return {"agent." + k: v for k, v in {
+        "name": a.get("name") or a.get("short") or "", "short": a.get("short") or "",
+        "session_id": a.get("session_id") or "", "address": a.get("session_id") or a.get("short") or "",
+        "pane": pane, "window": window, "status": a.get("status") or "",
+        "agent": a.get("agent") or "", "repo": a.get("repo") or "", "cwd": a.get("cwd") or "",
+        "pid": str(a.get("pid") or ""), "context_pct": str(a.get("context_pct") or ""),
+        "voice": "voicemode" if "voicemode" in argv else "",
+        "tm": "taskmaster" if "taskmaster" in argv else "",
+        "host": a.get("_host") or "", "rsession": a.get("_session") or "",
+    }.items()}
+
+def ctx_project(name):
+    pl = panes()
+    path = next((p[5] for p in pl if p[1] == name and p[3] == "1" and p[4] == "1"), os.path.expanduser("~"))
+    repo, branch, git, braw, dflt = git_where(path)
+    ready_n = project_ready(name, path, dflt)[1]       # None = could not tell
+    store = os.path.realpath(os.path.expanduser("~/.taskmaster"))
+    tm_dir = os.path.join(store, "projects", name)
+    seats = agents()
+    def seat(role):
+        return next((x for x in seats if (x.get("name") or "").startswith(f"{name}+{role}")), {})
+    sup, eng = seat("super"), seat("engineer")
+    return {"project." + k: v for k, v in {
+        "name": name, "path": path, "repo": repo, "branch": braw if braw != dflt else "",
+        "branch_raw": braw, "default": dflt, "git": ANSI_RE.sub("", git),
+        "ready": "?" if ready_n is None else (str(ready_n) if ready_n else ""),
+        "tm_dir": tm_dir if os.path.isdir(tm_dir) else "",
+        "socket": SOCK,                      # the viewed store's tmux server, for actions that place windows
+        "super": f"{name}+super" if sup else "", "super_seat": sup.get("name") or "",
+        "super_sid": sup.get("session_id") or "", "super_pane": sup.get("tmux_pane") or "",
+        "engineer_seat": eng.get("name") or "", "engineer_sid": eng.get("session_id") or "",
+    }.items()}
+
+FIELD_RE = re.compile(r"\{([a-z_]+(?:\.[a-z_]+)?)\}")
+def truthy(when, flat):
+    if not when:
+        return True
+    if isinstance(when, list):
+        return all(truthy(w, flat) for w in when)
+    neg = when.startswith("!")
+    v = flat.get(when.lstrip("!"), "")
+    return (not v) if neg else bool(v)
+
+def fill(t, flat):
+    """Substitute {a.b} placeholders; None when any field is missing/empty."""
+    miss = []
+    def rep(m):
+        v = flat.get(m.group(1), "")
+        if v == "":
+            miss.append(m.group(1))
+        return str(v)
+    out = FIELD_RE.sub(rep, t)
+    return None if miss else out
+
+def fillable(a, flat):
+    for t in a.get("command", []) + [a.get("body", ""), a.get("confirm", "")]:
+        for f in FIELD_RE.findall(t):
+            if f in ("input", "input_subject", "body"):
+                continue
+            if flat.get(f, "") == "":
+                return False
+    return True
+
+def build_menu(kind, flat, title, **keep):
+    """The menu for one row: builtin first, then each plugin under a
+    separator, in plugin-dir order. Greyed = `when` false or a placeholder
+    with no value (honest: the item exists, it does not apply here)."""
+    global MENU, PROMPT
+    items = []
+    for plug in [BUILTIN] + plugins():
+        acts = [a for a in plug.get("actions", []) if kind in a.get("contexts", [])]
+        if not acts:
+            continue
+        if items:
+            items.append(("", "", None))
+        for a in acts:
+            ok = truthy(a.get("when"), flat) and fillable(a, flat)
+            items.append((a.get("title", a.get("id", "?")), a.get("key", ""),
+                          {"a": a, "plug": plug, "ctx": flat} if ok else None))
+    PROMPT = None
+    MENU = {"title": title, "items": items, "cur": 0, "anchor": ANCHOR, **keep}
+
+def run_action(act, extra=None):
+    """ONE program, argv, no shell. cwd = the plugin dir, so "./name"
+    runs the script the plugin ships. The full context rides in
+    SESSIONVIEW_CONTEXT_JSON (herdr: HERDR_PLUGIN_CONTEXT_JSON). A non-zero exit
+    shows its first stderr line in the note box, like a refused mail."""
+    global PROMPT
+    a, plug, flat = act["a"], act["plug"], dict(act["ctx"])
+    if extra:
+        flat.update(extra)
+    if a.get("body") is not None:
+        text = fill(a["body"], flat)
+        if text is None:
+            return note("missing field for body")
+        path = state(f"plugin-{plug['id']}-{a['id']}.txt")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text + "\n")
+        flat["body"] = path
+    argv = [fill(x, flat) for x in a.get("command", [])]
+    if not argv or any(x is None for x in argv):
+        return note("missing field in command")
+    if argv[0].startswith("./") and plug.get("dir"):
+        argv[0] = os.path.join(plug["dir"], argv[0][2:])
+    env = dict(os.environ, SESSIONVIEW_CONTEXT_JSON=json.dumps(flat), SESSIONVIEW_PLUGIN_ID=plug["id"],
+               SESSIONVIEW_PLUGIN_ROOT=plug.get("dir", ""), SESSIONVIEW_ACTION_ID=a.get("id", ""))
+    r = subprocess.run(argv, capture_output=True, text=True, env=env,
+                       cwd=plug.get("dir") or None)
+    if r.returncode != 0:
+        why = (r.stderr or r.stdout or "").strip().splitlines()
+        note(why[0] if why else f"{argv[0]} rc {r.returncode}", title="failed")
+    return r
+
+def note(text, title="note"):
+    """The FULL text: the panel wraps it, so all of it shows in one go, with
+    no scroll bars. It used to clip to one row
+    of WIDTH - 6 -- 28 columns on a default sidebar -- so an eighty-character
+    "REFUSING TO SEND ... is not deliverable on this host" reached the user as its
+    first three words, and a refused action was unreadable from a dead one."""
+    global PROMPT
+    PROMPT = {"title": title, "label": text, "value": "",
+              "act": "note", "sess": "", "kind": "note"}
+
+def ctx_store(name):
+    """The store row's menu context: its name and the tmux server it views -
+    what `tm kick --store NAME` needs and nothing it does not."""
+    return {"store.name": name, "store.socket": SOCK}
+
+def store_menu(name):
+    build_menu("store", ctx_store(name), name)
+
+def store_row_click(btn, x, x0):
+    """What a click on the store row means: right-click anywhere
+    is the store menu (Kick); a left-click splits at the dots column X0 -
+    from one column before the dots it is Switch store, before that it is
+    the name, which opens the store."""
+    if btn == 2:
+        return "kick"
+    return "switch" if x0 and x >= x0 - 1 else "open"
+
+def store_row_dispatch(btn, x, val):
+    """Do what a click on the store row means; VAL is its target's
+    (store, x0). Returns the word store_row_click chose."""
+    name, x0 = val
+    act = store_row_click(btn, x, x0)
+    if act == "open":
+        open_store(name)                   # the name: the store's session + view
+    elif act == "switch":
+        switch_store_menu()                # the dots: the Switch store modal
+    else:
+        store_menu(name)                   # right-click: Kick
+    return act
+
+def project_menu(name):
+    build_menu("project", ctx_project(name), name, sess=name)
+
+def open_agent_menu_for(t):
+    """The menu for a row target of any kind - what right-click dispatches
+    by hand in the mouse loop, gathered for the dots."""
+    what, val = t
+    if what == "pane":
+        agent_menu(pane=val)
+    elif what == "agent":
+        agent_menu(sid=val)
+    elif what == "xpane":
+        agent_menu(sid=val[2], xpane=val[:2])
+    elif what in ("rpane", "ragent"):
+        agent_menu(rec=val)
+
+def agent_menu(pane=None, sid=None, rec=None, xpane=None):
+    """Right-click an AGENT row: a menu on the agent, to send it a thing and
+    more. Copy name is on it because a TUI row is not
+    selectable text. The items come from the manifests: Speak is
+    the voicemode plugin's, the agent verbs are session's."""
+    ag = [] if rec else agents()
+    a = rec or next((x for x in ag
+                     if (pane and (x.get("tmux_pane") or "") == pane)
+                     or (sid and x.get("session_id") == sid)), {})
+    if not a and pane:
+        # `session list` says tmux_pane null for a seat it cannot place on
+        # the server it runs from - the frame's own server, since the frame
+        # (right-clicking two agents brought up no menu; measured: agents() inside the
+        # sidebar returned tmux_pane None for both, so nothing matched and
+        # this returned without a word). The row was placed by pid ancestry
+        # on the VIEWED server; match the same way.
+        pl = panes()
+        pid2pane = {q[7]: q[0] for q in pl if len(q) > 7}
+        parents = ppids()
+        a = next((x for x in ag
+                  if pane_of_pid(x.get("pid"), pid2pane, parents) == pane), {})
+        if a:
+            # The CONTEXT read tmux_pane too, so agent.pane was "" inside the frame
+            # and Jump to greyed. The row was found by the pane: say so.
+            a = dict(a, tmux_pane=pane)
+    if a and xpane:
+        # The row placed it on another store's server: carry the socket so
+        # Jump to lands there (menu_pick reads rec._xsock), and name the pane
+        # on THAT server, not the same id on this one.
+        a = dict(a, tmux_pane=xpane[1], _xsock=xpane[0])
+    name = a.get("name") or a.get("short") or ""
+    if not name:
+        return note(f"no seat found for {pane or sid or '?'}")
+    pane = a.get("tmux_pane") or ""
+    win = a.get("_window", "") if a.get("_host") else (
+          next((p[2] for p in panes(a.get("_xsock")) if p[0] == pane), "") if pane else "")
+    build_menu("agent", ctx_agent(a, win), name + (f" @{a['_host']}" if a.get("_host") else ""),
+               sess=name, pane=pane, rec=a, addr=a.get("session_id") or a.get("short") or "")
+
+def _rec_of(act):
+    return MENU_LAST.get("rec", {})
+
+MENU_LAST = {}
+def menu_pick(i):
+    global MENU, PROMPT
+    if MENU is None or not (0 <= i < len(MENU["items"])):
+        return
+    MENU_LAST.clear(); MENU_LAST.update(rec=MENU.get("rec") or {})
+    _label, _key, act = MENU["items"][i]
+    if not act:
+        return
+    anchor, before = MENU.get("anchor"), PROMPT
+    _menu_pick(act)
+    if PROMPT is not None and PROMPT is not before and anchor is not None:
+        PROMPT.setdefault("anchor", anchor)   # a prompt from a menu item opens where the menu did
+
+def _menu_pick(act):
+    global MENU, PROMPT
+    sess, pane = MENU.get("sess", ""), MENU.get("pane")
+    a = act["a"]
+    b = a.get("builtin")
+    if b == "rename":
+        PROMPT = {"title": "rename", "label": sess, "value": sess,
+                  "act": "rename", "sess": sess, "kind": "text"}
+        MENU = None
+    elif b == "newtab":
+        # The picker over the configured windows for THIS session: right-click
+        # a session, New tab, and the autocomplete box opens.
+        open_picker("windows", sess)
+    elif b == "close":
+        PROMPT = {"title": "close", "label": f"kill {sess}?  y / n", "value": "",
+                  "act": "close", "sess": sess, "kind": "confirm"}
+        MENU = None
+    elif b == "copy":
+        MENU = None
+        subprocess.run(["pbcopy"], input=sess, text=True)
+    elif b == "keys":
+        MENU = None
+        help_keys()
+    elif b == "config":
+        MENU = None
+        path = sh([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config"), "path"]).strip()
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nvim"
+        if not path:
+            note("sessionview-config path: no home file", title="failed")
+        elif sess:
+            subprocess.run(tmx("new-window", "-t", sess, "-n", "config",
+                               f"{editor} {shlex.quote(path)}"))
+            focus_main()                  # an editor you cannot type into is a picture
+        else:
+            note("no session to open it in")
+    elif b == "settings":
+        MENU = None
+        if sess:
+            subprocess.run(tmx("new-window", "-t", sess, "-n", "settings",
+                               shlex.quote(os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config")) + " edit"))
+            focus_main()                  # it says the arrows work, so the keyboard must be there
+        else:
+            note("no session to open it in")
+    elif b == "store-open":
+        MENU = None                        # the Switch store modal's pick
+        open_store(a["store"])             # = a click on that store's name
+    elif b == "jump":
+        MENU = None
+        rec = _rec_of(act)
+        if rec.get("_host"):
+            jump(("rpane", rec))
+        elif rec.get("_xsock") and pane:
+            jump(("xpane", (rec["_xsock"], pane)))
+        elif pane:
+            jump(("pane", pane))
+    elif a.get("pick"):
+        # `pick = "agents"` (or "windows"/"sessions") - the picker instead
+        # of a typed box; the chosen value rides as {input}, as a prompt's would.
+        open_picker(a["pick"], sess, pick=lambda v, act=act: run_action(
+            act, {"input": v, "input_subject": subject_of(v)}))
+    elif a.get("prompt"):
+        MENU = None
+        # {agents} in a manifest's prompt = the registered agent names, so the
+        # box shows what `session start` will accept (session plugin, start-agent)
+        label = a["prompt"].replace("{agents}", " ".join(registered_agents()) or "(none registered)")
+        PROMPT = {"title": a.get("title", ""), "label": label, "value": "",
+                  "act": "plugin", "plugin": act, "sess": sess, "kind": "text"}
+    elif a.get("confirm"):
+        MENU = None
+        PROMPT = {"title": a.get("title", ""), "label": (fill(a["confirm"], act["ctx"]) or a["confirm"]) + "  y / n",
+                  "value": "", "act": "plugin", "plugin": act, "sess": sess, "kind": "confirm"}
+    else:
+        MENU = None
+        run_action(act)
+
+ARROW_RE = re.compile(r"\x1b\[([ABCD])")
+
+def menu_move(step):
+    """Move the cursor to the next ENABLED item, wrapping. Disabled entries
+    (the not-yet-wired ones) are skipped, never landed on."""
+    if MENU is None:
+        return
+    items = MENU["items"]
+    live = [i for i, it in enumerate(items) if it[2]]
+    if not live:
+        return
+    cur = MENU.get("cur", live[0])
+    here = live.index(cur) if cur in live else 0
+    MENU["cur"] = live[(here + step) % len(live)]
+
+def menu_keys(text):
+    """Arrows move, enter picks, the item's own letter still picks it, esc
+    closes; the box accepts arrows. An arrow IS an escape sequence, so it must be matched BEFORE
+    the bare-esc close or every down-arrow shuts the menu."""
+    global MENU
+    i = 0
+    while i < len(text) and MENU is not None:
+        ch = text[i]
+        if ch == "\x1b":
+            m = ARROW_RE.match(text, i)
+            if m:
+                menu_move({"A": -1, "B": 1, "C": 1, "D": -1}[m.group(1)])
+                i = m.end()
+                continue
+            MENU = None
+            return
+        if ch in "\r\n":
+            menu_pick(MENU.get("cur", 0))
+            return
+        if ch in "jk":                  # vim keys, by request
+            menu_move(1 if ch == "j" else -1)
+            i += 1
+            continue
+        for j, (_l, key, act) in enumerate(MENU["items"]):
+            if act and key and ch == key:
+                menu_pick(j)
+                return
+        i += 1
+
+def prompt_commit():
+    global PROMPT
+    if PROMPT is None:
+        return
+    p, PROMPT = PROMPT, None
+    val, sess = p["value"].strip(), p["sess"]
+    if p["act"] == "rename" and val and sess:
+        subprocess.run(tmx("rename-session", "-t", sess, val))
+    elif p["act"] == "message" and val and p.get("addr"):
+        r = mail(p["addr"], val)
+        if r.returncode != 0:
+            why = (r.stderr or r.stdout or "").strip().splitlines()
+            PROMPT = {"title": "not sent", "label": why[0] if why else
+                      f"rc {r.returncode}", "value": "",
+                      "act": "note", "sess": "", "kind": "note"}
+    elif p["act"] == "plugin" and (val or p["plugin"]["a"].get("empty")):
+        # {input} is the typed text; {input_subject} is it made safe for a
+        # subject line (ASCII, no backticks or $, clipped) -- subject_of().
+        # A manifest `empty = "..."` says what a bare Enter means (start-agent:
+        # "-", a plain claude); without it an empty answer runs nothing, as before.
+        val = val or p["plugin"]["a"]["empty"]
+        run_action(p["plugin"], {"input": val,
+                                 "input_subject": subject_of(val)})
+    # "agent-plus" and "newtab" were text boxes here until the one picker
+    # replaced them; both are the picker now - start_agent() and open_window().
+
+def mail(addr, text):
+    """DURABLE mail, not keystrokes into a pane: a mail send, not a message
+    typed directly. Addressed by SESSION ID, which reaches a named seat -- measured
+    by sending one to a seat and watching its listener fire. The body goes
+    through a 0600 FILE because the send evaluates nothing it reads:
+    a backtick in what the user types stays a backtick."""
+    path = state("sidebar-mail.txt")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text + "\n")
+    # The SUBJECT is checked for backticks and $( by session-mail-send, which
+    # REFUSES the send (measured -- the first sidebar mail vanished
+    # exactly this way, because the error was captured and thrown away).
+    # A code span belongs in the body, which is byte-verbatim; so the subject
+    # is the text with those characters taken out.
+    subject = subject_of(text)
+    # sessionmail's `message send` (`session mail send` was
+    # retired with the session repo). It has no --from: the sender is the
+    # environment, so bin/sessionview-send sets it to the human at the
+    # keyboard (bin/sessionview-from: $SESSIONVIEW_FROM, config mail_from,
+    # ..., $USER) and unsets EMAIL / TM_AGENT_ADDRESS, which would outrank it.
+    return subprocess.run([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-send"),
+                           addr, "-s", subject, "-f", path],
+                          capture_output=True, text=True)
+
+
+#: Typographic characters a dictated or pasted line brings, and their ASCII.
+ASCII_FOLD = {"\u2014": "-", "\u2013": "-", "\u2018": "'", "\u2019": "'", "\u201c": '"',
+              "\u201d": '"', "\u2026": "...", "\u00a0": " "}
+
+
+def subject_of(text):
+    """What the user typed, made safe for a subject: ASCII only
+    (`message send` REFUSES anything else, measured: an
+    em dash, a curly quote or an e-acute each came back "not ASCII"), no
+    backtick or $ (the send refuses those too), clipped to 60. The body keeps
+    the text byte-verbatim; only the subject is folded."""
+    import unicodedata
+    t = "".join(ASCII_FOLD.get(c, c) for c in text)
+    t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii")
+    return clip(re.sub(r"[`$]", "", t).strip(), 60) or "sidebar"
+
+def prompt_keys(text):
+    """Type into the box. Arrows are consumed whole (an arrow starts with an
+    escape, and esc means cancel -- so the sequence has to be matched first);
+    backspace edits, enter commits, y/n answer a confirm."""
+    global PROMPT
+    i = 0
+    while i < len(text) and PROMPT is not None:
+        ch = text[i]
+        if ch == "\x1b":
+            m = ARROW_RE.match(text, i)
+            if m:                       # arrows do nothing in a text box yet,
+                i = m.end()             # but they must not read as "cancel"
+                continue
+            PROMPT = None
+            return
+        if PROMPT["kind"] == "note":
+            PROMPT = None
+            return
+        if PROMPT["kind"] == "confirm":
+            if ch in "yY":
+                pr, PROMPT = PROMPT, None
+                if pr["act"] == "plugin":
+                    run_action(pr["plugin"])
+                else:
+                    subprocess.run(tmx("kill-session", "-t", pr["sess"]))
+            elif ch in "nN\r\n":
+                PROMPT = None
+            return
+        if ch in "\r\n":
+            prompt_commit()
+            return
+        if ch in "\x7f\b":
+            PROMPT["value"] = PROMPT["value"][:-1]
+        elif ch.isprintable():
+            PROMPT["value"] += ch
+        i += 1
+
+
+# ---- the popup box ----------------------------------------------------------
+# The menu first landed as plain rows at the top; a small popup reads better,
+# like herdr's new-tab box. So the menu FLOATS: the project list stays drawn
+# behind it and only the covered rows lose their click targets.
+CURSOR = "\u2588"
+
+def wrap(text, width, cap=8):
+    """Plain text as a list of rows, at most `cap` of them: a runaway stderr
+    must not eat the panel (the point is seeing more, not a note
+    that fills the sidebar). Escapes are stripped -- notes are messages, not
+    painted rows -- and a word longer than the box is broken rather than lost."""
+    out, cur = [], ""
+    for w in ANSI_RE.sub("", text).split():
+        if not cur:
+            cur = w
+        elif len(cur) + 1 + len(w) <= width:
+            cur += " " + w
+        else:
+            out.append(cur); cur = w
+        while len(cur) > width:
+            out.append(cur[:width]); cur = cur[width:]
+    if cur:
+        out.append(cur)
+    if len(out) > cap:
+        out = out[:cap]
+        out[-1] = out[-1][:max(1, width - 1)] + "\u2026"
+    return out or [""]
+
+def registered_agents():
+    """The names `session start` accepts - ASKED OF THE LAUNCHER.
+
+    This used to carry its own copy of session-start's rule ($AGENTS_DIR
+    else ~/.claude/agents; <name>.md or <name>/<name>.md), which made two
+    hardcoded copies of "where agents live" in two repos. Add a directory
+    to one and not the other and this picker
+    offers a name the launcher cannot start - a list that lies is worse
+    than no list. So the launcher answers, via `session start
+    --list-agents`, which resolves exactly what a launch would.
+
+    The old local rule stays as the FALLBACK, not as the answer: the
+    sidebar must paint even where `session` is missing, slow or broken.
+    Short timeout for the same reason - this is called on a redraw."""
+    try:
+        out = subprocess.run(["session", "start", "--list-agents"],
+                             capture_output=True, text=True, timeout=3)
+        if out.returncode == 0:
+            names = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+            if names:
+                return names
+    except Exception:
+        pass
+    d = os.path.expanduser(os.environ.get("AGENTS_DIR") or "~/.claude/agents")
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return []
+    out = []
+    for nm in names:
+        p = os.path.join(d, nm)
+        if nm.endswith(".md") and os.path.isfile(p):
+            out.append(nm[:-3])
+        elif os.path.isdir(p) and os.path.isfile(os.path.join(p, nm + ".md")):
+            out.append(nm)
+    return out
+
+def _panel():
+    """(title, [(left, right, colour, target)]) for whichever overlay is open."""
+    if PROMPT is not None:
+        rows = [("", "", C_DIM, None)]
+        if PROMPT["kind"] == "text":
+            # The label was never drawn for a text prompt - only the input row
+            # - so "Start an agent" showed an empty field and a user typed a
+            # nickname into it ("session start, agent NAME not found": the
+            # box takes an agent's name, or nothing). The label says what goes in the box.
+            if PROMPT.get("label"):
+                rows += [(l, "", C_DIM, None) for l in wrap(PROMPT["label"], WIDTH - 7)]
+            rows.append((PROMPT["value"] + CURSOR, "", C_SEL, None))
+            rows.append(("", "", C_DIM, None))
+            rows.append(("enter  save", "esc", C_DIM, ("menu-close", None)))
+        elif PROMPT["kind"] == "note":
+            rows += [(l, "", C_SEL, None) for l in wrap(PROMPT["label"], WIDTH - 7)]
+            rows.append(("", "", C_DIM, None))
+            rows.append(("any key", "close", C_DIM, ("menu-close", None)))
+        else:
+            rows += [(l, "", C_SEL, None) for l in wrap(PROMPT["label"], WIDTH - 7)]
+            rows.append(("", "", C_DIM, None))
+            rows.append(("y  kill", "n", C_DIM, ("menu-close", None)))
+        return PROMPT["title"], rows
+    cur = MENU.get("cur", 0)
+    rows = [(label, key,
+             # live = bright, cursor = bright + bold, greyed = dim. In C_NAME a live
+             # item read as disabled (seen: five opens, no picks).
+             (C_SEL + "\033[1m" if (act and i == cur) else C_SEL if act else C_DIM),
+             (("menu-item", i) if act else None))
+            for i, (label, key, act) in enumerate(MENU["items"])]
+    rows += [("", "", C_DIM, None), ("esc", "close", C_DIM, ("menu-close", None))]
+    return MENU["title"], rows
+
+def box_top(anchor, n, height):
+    """The first line of an N-row box in a HEIGHT-line pane. With an
+    ANCHOR row: start on the row below it, or, when that would run off the
+    bottom, end on the row above it; clamped so no box row is off-pane. No
+    anchor (a keyboard open): centred, as before."""
+    if anchor is None:
+        return max(0, (height - n) // 2)
+    top = anchor + 1 if anchor + 1 + n <= height else anchor - n
+    return max(0, min(top, max(0, height - n)))
+
+def overlay(lines, targets):
+    title, rows = _panel()
+    pop = bg(CFG.get("popup_bg", "#181924"))
+    inner = max(8, WIDTH - 4)                       # 1 margin + 1 border each side
+    def boxrow(body):
+        return row(pop + body + BG)                 # padding outside the box stays sidebar bg
+    box = [boxrow(" " + C_DIM + "\u256d" + "\u2500" * inner + "\u256e")]
+    box.append(boxrow(" " + C_DIM + "\u2502" + C_SEL + "\033[1m"
+                      + lay(" " + title + "\t", inner) + "\033[22m" + C_DIM + "\u2502"))
+    box.append(boxrow(" " + C_DIM + "\u251c" + "\u2500" * inner + "\u2524"))
+    body_at = {}
+    for left, right, col, tgt in rows:
+        spec = f" {left}\t{right} "          # always tabbed: lay() only pads a tabbed spec
+        body_at[len(box)] = tgt
+        box.append(boxrow(" " + C_DIM + "\u2502" + col + lay(spec, inner) + "\033[22m" + C_DIM + "\u2502"))
+    box.append(boxrow(" " + C_DIM + "\u2570" + "\u2500" * inner + "\u256f"))
+    top = box_top((PROMPT if PROMPT is not None else MENU or {}).get("anchor"), len(box), len(lines))
+    out = list(lines)
+    tgt = {k: v for k, v in targets.items() if not top <= k < top + len(box)}
+    for i, b in enumerate(box):
+        if top + i >= len(out):
+            break
+        out[top + i] = b
+        if body_at.get(i):
+            tgt[top + i] = body_at[i]
+    return out, tgt
+
+_FIT = {"win": None, "pane": None}   # frame WINDOW width, and the pane width we last knew
+MIN_DRAG = 12                          # narrower than this is a slip, not a wish
+SHRINK_AFTER = 5                       # renders (fit: auto) before the bar gives width back
+
+def wish():
+    """The width the sidebar WANTS this render: `width` when fit is fixed;
+    when fit is auto, the widest natural row of the LAST render plus one,
+    clamped to [width_min, width_max]. Grows at once; shrinks only after
+    SHRINK_AFTER consecutive renders have wanted less, so an agent row whose
+    idle counter ticks from 9m to 10m does not wobble the bar. The width
+    fits what is inside it, with some truncation allowed."""
+    fixed = int(CFG["width"])
+    mode = str(CFG.get("fit", "fixed"))
+    if mode == "narrow" and _NEED["left_last"]:
+        # fit: narrow - the names-only width, always: the widest left half + 1,
+        # measured from what is on screen, no width_min floor: narrow looks
+        # at what is actually in there to decide how narrow it can be.
+        _NEED["shrink"] = 0
+        return max(8, _NEED["left_last"] + 1)
+    if mode == "focus":
+        # fit: focus - BIG (`width`, the user's number) while the bar has focus or is
+        # pinned; SMALL (the names-only width, the widest left half + 1, no
+        # width_min floor) the moment a click lands in the main section. No
+        # shrink hysteresis: retracting on click-out IS the feature. A click
+        # outside it retracts it, and a click in it snaps it bigger again.
+        _NEED["shrink"] = 0
+        if FOCUS["in"] or FOCUS["pin"] or not _NEED["left_last"]:
+            return fixed
+        return max(8, min(fixed, _NEED["left_last"] + 1))
+    if mode != "auto" or not _NEED["last"]:
+        _NEED["shrink"] = 0
+        return fixed
+    lo, hi = int(CFG.get("width_min", 20)), int(CFG.get("width_max", 60))
+    want = max(lo, min(hi, _NEED["last"] + 1))
+    have = _FIT["pane"] or fixed
+    if want < have:
+        _NEED["shrink"] += 1
+        if _NEED["shrink"] < SHRINK_AFTER:
+            return have
+    else:
+        _NEED["shrink"] = 0
+    return want
+
+def fit():
+    """WIDTH is a WISH, not a guarantee: a pane narrower than it wraps every
+    row and the whole sidebar shears when the window is resized, and a
+    resize has to work. So the width is re-read from
+    the pane on every render and clamped to it.
+
+    The pane can differ from what we last knew for TWO reasons, told apart
+    by the frame WINDOW's width (the sidebar width adjusts the way a tmux
+    pane's does):
+
+      window changed  -> the terminal was resized and the outer server scaled
+                         its panes proportionally (a client-resized hook did
+                         not hold it, measured): put the
+                         wish back, as before.
+      window the same -> THE USER DRAGGED THE BORDER. That is the new width: adopt
+                         it and remember it (`sessionview-config set width`,
+                         and `fit fixed` - a drag always beats auto), so the
+                         next open is the width chosen. The sidebar once
+                         undid every drag on the next redraw.
+
+    A drag below MIN_DRAG is a slip and is put back, not remembered. With
+    `fit: auto` the wish itself moves (see wish()); the pane follows it."""
+    global WIDTH
+    try:
+        cols = os.get_terminal_size().columns
+    except OSError:
+        cols = int(CFG["width"])
+    frame = os.environ.get("SESSIONVIEW_FRAME", "")
+    pane = os.environ.get("TMUX_PANE")
+    if not (frame and pane):
+        WIDTH = max(8, min(wish(), cols))
+        return
+    fsock = frame.split(":", 1)[0]
+    win = sh(["tmux", "-L", fsock, "display-message", "-p", "-t", pane,
+              "#{window_width}"]).strip()
+    known = _FIT["pane"]
+    dragged = (win and win == _FIT["win"] and known is not None and cols != known)
+    if dragged and cols >= MIN_DRAG:
+        CFG["width"] = cols                                    # the drag is the wish
+        if str(CFG.get("fit", "fixed")) in ("auto", "narrow", "focus"):
+            CFG["fit"] = "fixed"
+            subprocess.run([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config"),
+                            "set", "fit", "fixed"], capture_output=True)
+        subprocess.run([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config"),
+                        "set", "width", str(cols)], capture_output=True)
+        want = cols
+    else:
+        want = wish()
+        if cols != want:
+            subprocess.run(["tmux", "-L", fsock, "resize-pane", "-t", pane,
+                            "-x", str(want)], capture_output=True)
+    _FIT["win"] = win or _FIT["win"]
+    _FIT["pane"] = want
+    WIDTH = max(8, min(want, cols))
+
+def render(height=None):
+    fit()
+    _NEED["now"] = _NEED["left_now"] = 0
+    lines, targets = render_base(height)
+    _NEED["last"], _NEED["left_last"] = _NEED["now"], _NEED["left_now"]
+    return overlay(lines, targets) if (MENU is not None or PROMPT is not None) \
+                  else (lines, targets)
+
+# ---- main -------------------------------------------------------------------
+def draw(lines):
+    sys.stdout.write("\033[H\033[2J" + "\r\n".join(lines) + "\r")
+    sys.stdout.flush()
+
+def main():
+    global GROUPED, MENU, PROMPT, WRITE_TABS, FILTER, ANCHOR
+    if "--pick" in sys.argv:                        # the picker alone, in a popup
+        i = sys.argv.index("--pick")
+        WRITE_TABS = False
+        return pick_main(sys.argv[i + 1] if len(sys.argv) > i + 1 else "windows",
+                         sys.argv[i + 2] if len(sys.argv) > i + 2 else "")
+    if CFG_ERROR or CFG_WARN:
+        # the FIRST line, the home dir written ~: the box is ~27 columns and
+        # at most 8 rows, so the gist and both paths must fit in it
+        first = (CFG_ERROR or CFG_WARN).splitlines()[0].removeprefix("sessionview-config: ")
+        home = os.path.expanduser("~")
+        note(first.replace(home + "/", "~/") if home != "/" else first, title="settings")
+    if "--once" in sys.argv or not sys.stdin.isatty():
+        global ONESHOT
+        ONESHOT = True
+        WRITE_TABS = False                          # a one-shot render owns no windows
+        for host in CFG.get("remotes", []):         # synchronous, so --once is complete
+            fetch_remote(host)
+        h = int(os.environ.get("SIDEBAR_HEIGHT", "40"))
+        print("\n".join(render(h)[0]))
+        return
+    for host in CFG.get("remotes", []):
+        threading.Thread(target=remote_loop, args=(host,), daemon=True).start()
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        # ?1004h: FOCUS events. A click in the main section never reaches this
+        # pane, but it moves focus there, and tmux (focus-events on, set by the
+        # frame) then sends ESC [ O here: the menu closes on it, so a click
+        # outside the sidebar, onto the main section, makes the menu disappear.
+        sys.stdout.write("\033[?1000h\033[?1006h\033[?1004h\033[?25l"); sys.stdout.flush()
+        # A resize must redraw NOW. PEP 475 makes select() retry across a
+        # signal instead of returning, so the handler alone is not enough:
+        # the wakeup fd is what actually breaks the wait.
+        rfd, wfd = os.pipe()
+        os.set_blocking(wfd, False)
+        os.set_blocking(rfd, False)
+        signal.set_wakeup_fd(wfd)
+        signal.signal(signal.SIGWINCH, lambda *_: None)
+        # SIGHUP = the same clean reload as `q` (exit 0 -> the supervisor runs
+        # us again): `kill -HUP $(pgrep -f scripts/tmux-sidebar)` after an edit,
+        # so a live sidebar picks it up without a keypress.
+        signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))
+        lines, targets = render(); draw(lines); buf = ""
+        while True:
+            r, _, _ = select.select([fd, rfd], [], [], REFRESH)
+            if rfd in r:
+                try:
+                    os.read(rfd, 256)
+                except BlockingIOError:
+                    pass
+                lines, targets = render(); draw(lines); continue
+            if not r:
+                lines, targets = render(); draw(lines); continue
+            buf += os.read(fd, 64).decode(errors="ignore")
+            if "\x1b[O" in buf:                    # focus LEFT the sidebar: a click in the main section
+                buf = buf.replace("\x1b[O", "")
+                FOCUS["in"] = False
+                if MENU is not None or CFG.get("fit") == "focus":
+                    MENU = None
+                    lines, targets = render(); draw(lines)   # fit: focus retracts here
+            if "\x1b[I" in buf:                    # focus came back: fit: focus snaps big
+                buf = buf.replace("\x1b[I", "")
+                FOCUS["in"] = True
+                if CFG.get("fit") == "focus":
+                    lines, targets = render(); draw(lines)
+            if PROMPT is not None or MENU is not None:
+                # The overlay owns the keyboard: no reload/quit while you are
+                # typing a session name. Clicks fall through to the mouse loop.
+                keys = MOUSE_RE.sub("", buf)
+                # Keep ONLY the mouse for the click loop below: the key bytes
+                # are consumed here, and an arrow left in `buf` would be
+                # replayed on every read until the next escape arrived.
+                buf = "".join(mm.group(0) for mm in MOUSE_RE.finditer(buf))
+                if PROMPT is not None:
+                    prompt_keys(keys)
+                elif keys:
+                    menu_keys(keys)
+            elif PICKER is not None:                      # the picker owns the keyboard
+                keys = MOUSE_RE.sub("", buf)
+                buf = "".join(mm.group(0) for mm in MOUSE_RE.finditer(buf))
+                picker_keys(keys)
+            elif "Q" in buf and "\x1b" not in buf:    # quit the surface: non-zero ends the supervisor loop
+                sys.exit(3)
+            elif "q" in buf and "\x1b" not in buf:    # reload: exit 0, `sessionview sidebar` runs us again
+                break
+            elif "\x1b" not in buf and any(c in KEYS for c in buf):   # the alphabet (config/keys.md)
+                KEYS[next(c for c in buf if c in KEYS)]()
+            for m in MOUSE_RE.finditer(buf):
+                btn, x, y, kind = (int(m.group(1)), int(m.group(2)),
+                                   int(m.group(3)), m.group(4))
+                if kind != "M":
+                    continue
+                try:   # evidence for "my click opened the menu": what button arrived
+                    with open(state("sidebar-mouse.log"), "a") as lg:
+                        lg.write(f"{time.strftime('%H:%M:%S')} btn={btn} x={x} y={y} target={targets.get(y - 1)}\n"[:200])
+                except OSError:
+                    pass
+                t = targets.get(y - 1)
+                ANCHOR = y - 1                    # a menu this click opens sits beside this row
+                if MENU is not None and not (t and t[0] in ("menu-item", "menu-close")):
+                    # A click OUTSIDE an open menu closes it and is consumed -
+                    # the desktop rule, so a miss cannot land on a row's X
+                    # (a click outside the menu makes it go away). Prompts are not
+                    # menus: typed text is not thrown away by a stray click.
+                    MENU = None
+                    lines, targets = render(); draw(lines)
+                    continue
+                if not t:
+                    continue
+                what, val = t
+                if btn == 2 and what == "picker-item":   # right-click a picker row = pin
+                    picker_click("picker-pin", val); continue
+                if btn == 2 and what == "store-dots":     # right-click the store row: Kick
+                    store_row_dispatch(btn, x, val); continue
+                if btn == 2 and what in ("session", "session-dots"):   # right-click a project
+                    project_menu(val[0] if what == "session-dots" else val); continue
+                if what == "pane-dots":                  # the selected agent row
+                    inner, x0 = val
+                    if btn == 2 or (x0 and x0 - 1 <= x <= x0 + 1):   # the dots (a column either side), or right-click
+                        open_agent_menu_for(inner); continue
+                    t = inner; what, val = t              # else: the row itself, as before (t too: jump(t) reads it)
+                if btn == 2 and what == "pane":          # right-click an agent
+                    agent_menu(pane=val); continue
+                if btn == 2 and what == "agent":         # ... one with no pane
+                    agent_menu(sid=val); continue
+                if btn == 2 and what == "xpane":         # ... one on another store's server
+                    agent_menu(sid=val[2], xpane=val[:2]); continue
+                if btn == 2 and what in ("rpane", "ragent"):   # a remote seat
+                    agent_menu(rec=val); continue
+                if btn != 0:
+                    continue
+                if what == "menu-item":
+                    if MENU is not None:
+                        MENU["cur"] = val
+                    menu_pick(val)
+                elif what == "menu-close":
+                    MENU = PROMPT = None
+                elif what in ("picker-close", "picker-order", "picker-item"):
+                    picker_click(what, val)
+                elif what == "agent":                    # nowhere to jump to:
+                    agent_menu(sid=val)                  # a left-click opens it
+                elif what in ("session", "session-dots") and READY_X.get(val[0] if what == "session-dots" else val) \
+                        and x >= READY_X[val[0] if what == "session-dots" else val]:
+                    jump_ready(val[0] if what == "session-dots" else val)   # the badge: its git tab
+                elif what == "session-dots":              # the selected row: dots = menu, else jump
+                    name, x0 = val
+                    if x0 and x0 - 1 <= x <= x0 + 1:
+                        project_menu(name)
+                    else:
+                        jump(("session", name))
+                elif what in ("session", "pane", "xpane", "rsession", "rpane"):
+                    jump(t)
+                elif what == "ragent":
+                    agent_menu(rec=val)
+                elif what == "store-dots":                # the store row: name opens, dots = Switch store
+                    store_row_dispatch(btn, x, val)
+                elif what == "user-mail":                 # the user's own mail (no right-click)
+                    user_mail_open(val)
+                elif what == "width-toggle":              # the header icon, and only the icon
+                    if x <= val:
+                        toggle_width()
+                elif what == "agents-head":
+                    x_filt, x_grp = val
+                    if x >= x_grp + 1:
+                        GROUPED = not GROUPED
+                    elif x >= x_filt:
+                        FILTER = "all" if FILTER == "current" else "current"
+                elif what == "plus-or-collapse":          # the bottom control strip
+                    lw, rx = val
+                    if x <= lw + 1:
+                        open_agent_plus()
+                    # the chevron (CFG collapse, "" by default) backed out
+                    # of MODE = "stores"; that view is retired, so it is inert
+                elif what == "new-or-menu":
+                    lw, rx = val
+                    if x <= lw + 1:                       # new = a SESSION
+                        open_picker("sessions")
+                    elif x >= rx:
+                        project_menu(current_session())
+            ANCHOR = None                         # a keyboard open has no row: centred
+            lines, targets = render(); draw(lines)
+            buf = buf[buf.rfind("\x1b"):] if buf.count("\x1b") and not MOUSE_RE.search(buf[buf.rfind("\x1b"):]) else ""
+    finally:
+        tab_clear()                                 # no tab-bar glyph outlives us
+        sys.stdout.write("\033[?1004l\033[?1006l\033[?1000l\033[?25h" + RESET); sys.stdout.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+def _excepthook(t, v, tb):
+    import traceback
+    log_err("uncaught", "".join(traceback.format_exception(t, v, tb)).strip())
+    sys.__excepthook__(t, v, tb)
+sys.excepthook = _excepthook
+
+if __name__ == "__main__":
+    main()

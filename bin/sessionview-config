@@ -1,0 +1,422 @@
+#!/bin/sh
+''':'
+# Started by sh: re-run this file with a Python 3.11 or newer. The rest of
+# the file is Python; to Python, these lines are one string.
+[ -n "${SESSIONVIEW_PYTHON:-}" ] && exec "$SESSIONVIEW_PYTHON" "$0" "$@"
+# >>> venv probe: the venv that installed this copy, before PATH.
+# Only for a wheel copy (site-packages/sessionview/_data); a checkout never
+# matches, so it keeps the PATH order below. Same text in all four probe
+# copies (lib/python.sh and the three trampolines); tests/test_venv_probe.py
+# holds them equal.
+if [ -z "${SESSIONVIEW_PYTHON:-}" ]; then
+  _sv_v="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  case "$_sv_v" in
+    */site-packages/sessionview/_data/*)
+      _sv_v="$(cd "$(dirname "$_sv_v")" 2>/dev/null && pwd -P)"
+      while [ -n "$_sv_v" ] && [ "$_sv_v" != / ] && [ ! -f "$_sv_v/pyvenv.cfg" ]; do
+        _sv_v="$(dirname "$_sv_v")"
+      done
+      if [ -n "$_sv_v" ] && [ -f "$_sv_v/pyvenv.cfg" ] && [ -x "$_sv_v/bin/python3" ] &&
+          "$_sv_v/bin/python3" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+        SESSIONVIEW_PYTHON="$_sv_v/bin/python3"; export SESSIONVIEW_PYTHON
+      fi ;;
+  esac
+  unset _sv_v
+fi
+# <<< venv probe
+[ -n "${SESSIONVIEW_PYTHON:-}" ] && exec "$SESSIONVIEW_PYTHON" "$0" "$@"
+for p in python3.14 python3.13 python3.12 python3.11 python3; do
+  command -v "$p" >/dev/null 2>&1 || continue
+  "$p" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null && exec "$p" "$0" "$@"
+done
+echo "sessionview: needs Python 3.11 or newer and found none on PATH (macOS ships 3.9)." >&2
+echo "  brew install python@3.14   or   uv python install 3.14" >&2
+exit 1
+':'''
+__doc__ = """sessionview-config - the ONE config cascade, JSON everywhere.
+
+  sessionview-config                    the settings screen (needs a terminal)
+  sessionview-config list               every setting as text: key, value, source
+  sessionview-config dump [--project DIR] [--store DIR] [--where]   merged config
+  sessionview-config get KEY [--project DIR] [--store DIR] [--where] [--json]
+  sessionview-config set KEY VALUE [--json] [--force]  write the HOME layer
+  sessionview-config unset KEY                         drop it, back to default
+  sessionview-config windows [--key K] [--project DIR] [--store DIR]  the `windows` list
+                                      (or the list at key K: `store_windows`, the store
+                                      view's tabs) as TSV,
+                                      sorted by position: position name when cwd
+                                      command focus auto console (command `-` = none,
+                                      auto `-` = unset, console true|false, default
+                                      false - the LAST column; a shell reads it
+                                      with IFS=tab, so no field is ever empty)
+  sessionview-config init                                            make the home file
+  sessionview-config path                                            the home file
+
+Layers, each a JSON object, later wins. JSON everywhere, because people
+already know it from Claude Code; no hidden defaults, because the home file
+is generated from a template:
+
+  1. <repo>/config/config.json        the TEMPLATE: every key, every default
+  2. ~/.sessionkit/view/settings/view.json
+                                      yours; MADE from the template on first
+                                      read (announced once on stderr).
+                                      SESSIONVIEW_CONFIG= names another file
+                                      (SIDEBAR_CONFIG= is honoured as the old name)
+  3. STORE/.sessionview               a JSON file, or a dir holding config.json
+  4. .sessionview                     the same, walked UP from --project's
+                                      root; the tree's root first, the
+                                      project's own last, so nearest wins
+
+Layers 3 and 4 are UNTRUSTED (a cloned repo can carry one), by POSITION, not
+path: they never set a key that runs something. `agent_command` is read from
+layers 1-2 only; a `windows` / `store_windows` entry from layer 3 or 4 keeps
+its data, but its `command` is the one layers 1-2 give the same name, else
+none (a plain shell). Each key ignored is named on stderr with its file.
+
+`get` prints a bool as true/false, a string bare, anything else as JSON
+(--json forces JSON). --where appends a TAB and the file that set the key,
+so a surprise always has a path. Keys starting with `_` are notes, not
+config. Exit 1 = usage, 2 = the key is in no layer, 3 = the home file is
+still at the old home and must be moved first (nothing is read or made).
+If the old home file is still there BESIDE the new one, every verb that
+reads the config warns once on stderr ("warning: remove the leftover ...")
+and goes on: a --project walk-up under the home dir reads it as layer 4.
+"""
+import json, shlex, tempfile, os, sys
+
+SESSIONVIEW_ROOT = os.environ.get("SESSIONVIEW_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+TEMPLATE = os.path.join(SESSIONVIEW_ROOT, "config", "config.json")
+
+# THE home settings dir, the one definition in Python: a folder per package
+# under the kit's home, `view` for sessionview. view.json is the home file,
+# and neomuttrc (bin/sessionview-messages) sits beside it. Every other Python
+# caller asks `sessionview-config path`; none re-spells it.
+SETTINGS_DIR = "~/.sessionkit/view/settings"
+HOME_FILE = os.path.join(SETTINGS_DIR, "view.json")
+# The OLD home file. Read by nothing here: init() only checks that it EXISTS,
+# to refuse loudly instead of making a fresh file beside an unmoved one, or to
+# warn when one was left behind beside the new file.
+LEGACY_HOME_FILE = "~/.sessionview/config.json"
+
+def home_path():
+    return os.path.expanduser(os.environ.get("SESSIONVIEW_CONFIG") or os.environ.get("SIDEBAR_CONFIG")
+                              or HOME_FILE)
+
+class Unmoved(Exception):
+    """The default home file is absent and the old one is present."""
+
+def unmoved():
+    """The refusal text when the DEFAULT home file is absent and the old one
+    exists, else None. An override (SESSIONVIEW_CONFIG, SIDEBAR_CONFIG) names
+    its file outright, so it is never refused. The old file is only stat'ed,
+    never opened: a value is never carried over by accident."""
+    if os.environ.get("SESSIONVIEW_CONFIG") or os.environ.get("SIDEBAR_CONFIG"):
+        return None
+    new, old = home_path(), os.path.expanduser(LEGACY_HOME_FILE)
+    if os.path.exists(new) or not os.path.lexists(old):
+        return None
+    # The FIRST line is the whole message (the sidebar shows only it, in a
+    # narrow box): what is wrong, both paths, what to run. The lines indented
+    # four spaces are the move, pasteable into sh: paths quoted (a HOME may
+    # hold a space). It stops before anything if the new file has appeared
+    # since, so the old file never overwrites it. No step fails on a file left
+    # behind: `find` moves the backups and neomuttrc only if they exist, and
+    # removes the old dir only if empty (a dir with no config.json is no layer).
+    q_new, q_dir = shlex.quote(new), shlex.quote(os.path.dirname(new))
+    q_old, q_odir = shlex.quote(old), shlex.quote(os.path.dirname(old))
+    return (f"sessionview-config: refusing: settings not moved. Run the host step: "
+            f"move {old} to {new}.\n"
+            f"  The host step, the file, its backups and neomuttrc, then the empty old dir:\n"
+            f"    test ! -e {q_new} && mkdir -p {q_dir} &&\n"
+            f"    mv {q_old} {q_new} &&\n"
+            f"    find {q_odir} -maxdepth 1 \\( -name 'config.json.before-*' -o -name neomuttrc \\) "
+            f"-exec mv {{}} {q_dir}/ ';' &&\n"
+            f"    find {q_odir} -maxdepth 0 -empty -delete\n"
+            f"  Nothing was read from the old file and no new file was made.")
+
+LEFTOVER_WARNED = False
+
+def leftover():
+    """Warn ONCE per process, on stderr, when the DEFAULT home file exists and
+    the old one is still there too. Not fatal: the new file is the one used.
+    The hazard is the walk-up: from a project under the home dir, dotfile()
+    finds the leftover (LEGACY_HOME_FILE) and reads it as an (untrusted)
+    project layer. Like unmoved(), it only stats the old file, and an override
+    (SESSIONVIEW_CONFIG, SIDEBAR_CONFIG) is never warned."""
+    global LEFTOVER_WARNED
+    if LEFTOVER_WARNED or os.environ.get("SESSIONVIEW_CONFIG") or os.environ.get("SIDEBAR_CONFIG"):
+        return
+    new, old = home_path(), os.path.expanduser(LEGACY_HOME_FILE)
+    if not (os.path.exists(new) and os.path.lexists(old)):
+        return
+    LEFTOVER_WARNED = True
+    # the FIRST line stands alone, as the sidebar's note
+    print(f"sessionview-config: warning: remove the leftover {old}: a project walk-up "
+          f"under your home dir reads it as an untrusted layer.\n"
+          f"  Your settings are {new}. Move any config.json.before-* backups and a "
+          f"neomuttrc beside it, then remove {os.path.dirname(old)}.", file=sys.stderr)
+
+def load(p):
+    try:
+        with open(p) as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"sessionview-config: {p}: {e} (skipped)", file=sys.stderr)
+        return {}
+    if not isinstance(d, dict):
+        print(f"sessionview-config: {p}: not a JSON object (skipped)", file=sys.stderr)
+        return {}
+    return {k: v for k, v in d.items() if not k.startswith("_")}
+
+def init(quiet=False):
+    """The home file from the template, only when it is missing. Returns the path."""
+    p = home_path()
+    why = unmoved()
+    if why:
+        raise Unmoved(why)
+    if not os.path.exists(p):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(TEMPLATE) as src, open(p, "w") as dst:
+            dst.write(src.read())
+        if not quiet:
+            print(f"sessionview-config: made {p} from {TEMPLATE}", file=sys.stderr)
+    leftover()
+    return p
+
+def dotfile(d):
+    p = os.path.join(d, ".sessionview")
+    if os.path.isfile(p):
+        return p
+    q = os.path.join(p, "config.json")
+    return q if os.path.isdir(p) and os.path.isfile(q) else None
+
+def layers(project=None, store=None):
+    out = [TEMPLATE, init(quiet=False)]
+    if store and dotfile(store):
+        out.append(dotfile(store))
+    if project:
+        chain, d = [], os.path.realpath(project)
+        while True:
+            f = dotfile(d)
+            if f and f not in out:
+                chain.append(f)
+            up = os.path.dirname(d)
+            if up == d:
+                break
+            d = up
+        out += reversed(chain)
+    return out
+
+# TRUST BY POSITION. layers()[:TRUSTED] - the template and
+# the home file - are yours; every later layer (STORE/.sessionview and the
+# --project walk-up chain) may be a cloned repo's, so it never sets a key that
+# EXECUTES: `agent_command` (plugins/session/start-agent exec's it) or the
+# `command` of a `windows` / `store_windows` entry (bin/sessionview-session
+# types it in with Enter). Decided by INDEX, never by path: a leftover
+# old home (LEGACY_HOME_FILE) reached by the walk-up from --project is a
+# project-chain layer, untrusted like any other (leftover() warns of it).
+TRUSTED = 2
+EXEC_KEYS = ("agent_command",)
+EXEC_LISTS = ("windows", "store_windows")
+
+def commands(rows):
+    """{name: command} of a trusted list's entries that carry one."""
+    return {str(w.get("name", "")).strip(): w["command"] for w in rows
+            if isinstance(w, dict) and w.get("command")} if isinstance(rows, list) else {}
+
+def untrusted(d, f, trusted):
+    """D (layer file F) without its executing keys. An entry of an executing
+    list keeps its data (position, name, when, cwd, focus, auto, console); a
+    command it sets is replaced by the TRUSTED command for the same name, else
+    dropped (a plain shell). So a project may reorder or retime the shipped
+    tabs, and add plain ones, but types nothing of its own. Each drop is named
+    on stderr with the file, so a surprise has a path."""
+    out = dict(d)
+    for k in EXEC_KEYS:
+        if k in out:
+            del out[k]
+            print(f"sessionview-config: {f}: {k} ignored (only the template and the home "
+                  f"file may set it)", file=sys.stderr)
+    for k in EXEC_LISTS:
+        rows = out.get(k)
+        if not isinstance(rows, list):
+            continue
+        rows = [dict(w) if isinstance(w, dict) else w for w in rows]
+        for w in rows:
+            if not isinstance(w, dict) or not w.get("command"):
+                continue                     # no command: nothing runs, keep it as it is
+            name = str(w.get("name", "")).strip()
+            mine = trusted[k].get(name)
+            if w["command"] != mine:
+                print(f"sessionview-config: {f}: {k}[{name}].command ignored "
+                      f"(only the template and the home file may set one; "
+                      f"{'theirs is used' if mine else 'a plain shell'})", file=sys.stderr)
+            if mine:
+                w["command"] = mine
+            else:
+                del w["command"]
+        out[k] = rows
+    return out
+
+def merged(project=None, store=None):
+    """(config, {key: the file that set it}). A layer past TRUSTED goes
+    through untrusted() first, so `where` never names it for a dropped key."""
+    cfg, where, trusted = {}, {}, None
+    for i, f in enumerate(layers(project, store)):
+        d = load(f)
+        if i >= TRUSTED:
+            if trusted is None:
+                trusted = {k: commands(cfg.get(k)) for k in EXEC_LISTS}
+            d = untrusted(d, f, trusted)
+        for k, v in d.items():
+            cfg[k], where[k] = v, f
+    return cfg, where
+
+def show(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return v
+    return json.dumps(v, ensure_ascii=False)
+
+def main(argv):
+    args, project, store, where, as_json, force, key = [], None, None, False, False, False, "windows"
+    it = iter(argv)
+    for a in it:
+        if a == "--project": project = next(it, None)
+        elif a == "--store": store = next(it, None)
+        elif a == "--where": where = True
+        elif a == "--json": as_json = True
+        elif a == "--force": force = True
+        elif a == "--key": key = next(it, None) or "windows"
+        elif a in ("-h", "--help"): print(__doc__.strip()); return 0
+        else: args.append(a)
+    screen = os.path.join(SESSIONVIEW_ROOT, "lib", "sessionview-config-screen")
+    if not args or args[0] in ("edit", "list"):
+        # One command for the engine and the screen: no verb opens the screen,
+        # `list` prints its rows. Without a terminal there is no screen, so
+        # a bare call prints the usage instead of failing inside curses.
+        if args and args[0] == "list":
+            os.execv(sys.executable, [sys.executable, screen, "--list"])
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print(__doc__.strip(), file=sys.stderr); return 1
+        os.execv(sys.executable, [sys.executable, screen])
+    verb = args[0]
+    if verb == "path":
+        print(home_path()); return 0
+    if verb == "init":
+        print(init()); return 0
+    cfg, src = merged(project, store)
+    if verb == "dump":
+        if where:
+            for k in cfg: print(f"{k}\t{show(cfg[k])}\t{src[k]}")
+        else:
+            print(json.dumps(cfg, indent=2, ensure_ascii=False))
+        return 0
+    if verb == "windows":
+        # The `windows` list for a SHELL (sessionview-session is bash): one
+        # row per entry, tab-separated, sorted by `position` with the list's
+        # own order as the tie-break. No field is ever empty (`-` for no
+        # command, defaults filled in), because `read` with IFS=tab collapses
+        # consecutive tabs and would shift the fields. A bad entry is named
+        # on stderr and skipped, never fatal: the session still opens.
+        # `window_pins` ({name: true|false}, the picker's ^p / right-click) lies
+        # OVER each entry's `auto`: the list stays the template's (or a store's,
+        # a project's) and a user's pins are a small delta on it, so a shipped
+        # change to the list still reaches someone who has pinned things.
+        # --key: the same schema at another key - `store_windows`, the store
+        # view's tabs, kept apart so a project's new-tab picker and
+        # pins never see a store entry. Pins are by name and apply to both.
+        rows = cfg.get(key) or []
+        pins = cfg.get("window_pins") or {}
+        if not isinstance(rows, list):
+            print(f"sessionview-config: {key}: not a list", file=sys.stderr); return 2
+        if not isinstance(pins, dict):
+            print("sessionview-config: window_pins: not an object (ignored)", file=sys.stderr); pins = {}
+        out = []
+        for i, w in enumerate(rows):
+            if not isinstance(w, dict) or not str(w.get("name", "")).strip():
+                print(f"sessionview-config: {key}[{i}]: needs a name (skipped)", file=sys.stderr); continue
+            try:
+                pos = int(w.get("position", 1000))
+            except (TypeError, ValueError):
+                print(f"sessionview-config: {key}[{i}]: position {w.get('position')!r} is not a number (skipped)",
+                      file=sys.stderr); continue
+            out.append((pos, i, w))
+        # EVERY text field is one cell - a TAB or a line break in it
+        # becomes a space. The shell reads a row by TAB and a row ends at a
+        # newline, so a `name`, `when` or `cwd` from an untrusted layer that
+        # held "\t...\ttouch x" shifted its text into the command column (or
+        # began a row of its own), and the command was typed with Enter.
+        # A cell never comes out EMPTY either (its default stands in): `read`
+        # collapses two TABs into one, which shifts the columns just the same.
+        def cell(v, default):
+            return " ".join(str(v).replace("\t", " ").splitlines()).strip() or default
+        for pos, _, w in sorted(out, key=lambda t: (t[0], t[1])):
+            cmd = cell(w.get("command") or "", "-")
+            auto = pins[w["name"]] if isinstance(pins.get(w["name"]), bool) else w.get("auto")
+            print("\t".join([str(pos), cell(w["name"], "-"), cell(w.get("when") or "always", "always"),
+                             cell(w.get("cwd") or "root", "root"), cmd,
+                             "true" if w.get("focus") else "false",
+                             "-" if auto is None else ("true" if auto else "false"),
+                             # a console pane under the tab; TRAILING, so the
+                             # columns before it never move
+                             "true" if w.get("console") is True else "false"]))
+        return 0
+    if verb == "get" and len(args) == 2:
+        k = args[1]
+        if k not in cfg:
+            print(f"sessionview-config: {k}: in no layer", file=sys.stderr); return 2
+        v = json.dumps(cfg[k], ensure_ascii=False) if as_json else show(cfg[k])
+        print(f"{v}\t{src[k]}" if where else v)
+        return 0
+    if verb in ("set", "unset"):
+        # WRITES THE HOME LAYER ONLY (home_path()). Layers 3 and
+        # 4 belong to stores and projects: a tool that can silently write into
+        # a project file is a surprise, and this one is called from a UI.
+        # Before `set` the cascade could only READ, so even a terminal
+        # preference had to be hand-edited into the file.
+        if verb == "set" and len(args) != 3: print(__doc__.strip(), file=sys.stderr); return 1
+        if verb == "unset" and len(args) != 2: print(__doc__.strip(), file=sys.stderr); return 1
+        k = args[1]
+        tpl = load(TEMPLATE)
+        if k not in tpl and not force:
+            print(f"sessionview-config: {k}: not a key in the template — every key "
+                  f"and its default live there (no hidden defaults). --force writes it anyway.",
+                  file=sys.stderr); return 2
+        p = init()
+        cur = load(p)
+        if verb == "unset":
+            if k not in cur:
+                print(f"sessionview-config: {k}: not set in {p} — nothing to drop", file=sys.stderr); return 2
+            del cur[k]
+            v = None
+        else:
+            raw, default = args[2], tpl.get(k)
+            try:
+                if as_json:                      v = json.loads(raw)
+                elif isinstance(default, bool):  v = raw.strip().lower() in ("1", "true", "yes", "on")
+                elif isinstance(default, int):   v = int(raw)
+                elif isinstance(default, (list, dict)): v = json.loads(raw)
+                else:                            v = raw
+            except (ValueError, json.JSONDecodeError) as e:
+                print(f"sessionview-config: {k}: {raw!r} is not a {type(default).__name__}: {e}",
+                      file=sys.stderr); return 2
+            cur[k] = v
+        d = os.path.dirname(p)
+        fd, tmp = tempfile.mkstemp(dir=d)       # a crash must not leave half a config
+        with os.fdopen(fd, "w") as f:
+            json.dump(cur, f, indent=2, ensure_ascii=False); f.write("\n")
+        os.replace(tmp, p)
+        print(f"{k}\t{show(v) if v is not None else '(dropped)'}\t{p}")
+        return 0
+    print(__doc__.strip(), file=sys.stderr); return 1
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Unmoved as e:
+        print(e, file=sys.stderr)
+        sys.exit(3)

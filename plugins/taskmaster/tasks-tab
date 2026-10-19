@@ -1,0 +1,9 @@
+#!/bin/bash
+# tasks-tab NAME DIR — a "tasks" window in session NAME at DIR running the
+# user's `tasks` alias (bash: taskmaster task list --status review,active,todo
+# --interactive). Two tmux calls, hence a script. Reuses the window if
+# it already exists.
+set -u
+S="$1"; D="$2"
+if tmux list-windows -t "=$S" -F '#W' | grep -qx tasks; then exec tmux select-window -t "=$S:tasks"; fi
+tmux new-window -t "=$S" -c "$D" -n tasks && tmux send-keys -t "=$S:tasks" tasks C-m

@@ -1,0 +1,201 @@
+#!/bin/sh
+''':'
+# Started by sh: re-run this file with a Python 3.11 or newer. The rest of
+# the file is Python; to Python, these lines are one string.
+[ -n "${SESSIONVIEW_PYTHON:-}" ] && exec "$SESSIONVIEW_PYTHON" "$0" "$@"
+# >>> venv probe: the venv that installed this copy, before PATH.
+# Only for a wheel copy (site-packages/sessionview/_data); a checkout never
+# matches, so it keeps the PATH order below. Same text in all four probe
+# copies (lib/python.sh and the three trampolines); tests/test_venv_probe.py
+# holds them equal.
+if [ -z "${SESSIONVIEW_PYTHON:-}" ]; then
+  _sv_v="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  case "$_sv_v" in
+    */site-packages/sessionview/_data/*)
+      _sv_v="$(cd "$(dirname "$_sv_v")" 2>/dev/null && pwd -P)"
+      while [ -n "$_sv_v" ] && [ "$_sv_v" != / ] && [ ! -f "$_sv_v/pyvenv.cfg" ]; do
+        _sv_v="$(dirname "$_sv_v")"
+      done
+      if [ -n "$_sv_v" ] && [ -f "$_sv_v/pyvenv.cfg" ] && [ -x "$_sv_v/bin/python3" ] &&
+          "$_sv_v/bin/python3" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+        SESSIONVIEW_PYTHON="$_sv_v/bin/python3"; export SESSIONVIEW_PYTHON
+      fi ;;
+  esac
+  unset _sv_v
+fi
+# <<< venv probe
+[ -n "${SESSIONVIEW_PYTHON:-}" ] && exec "$SESSIONVIEW_PYTHON" "$0" "$@"
+for p in python3.14 python3.13 python3.12 python3.11 python3; do
+  command -v "$p" >/dev/null 2>&1 || continue
+  "$p" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null && exec "$p" "$0" "$@"
+done
+echo "sessionview: needs Python 3.11 or newer and found none on PATH (macOS ships 3.9)." >&2
+echo "  brew install python@3.14   or   uv python install 3.14" >&2
+exit 1
+':'''
+__doc__ = """The settings screen behind `sessionview-config` (no arguments): every
+setting, with its default, its note and where its current value comes from.
+Not on PATH; run it as:
+
+  sessionview-config             the screen (sidebar: project menu > Settings)
+  sessionview-config list        the same rows as text, for an agent or a pipe
+
+The config command could once only read. This screen is a small configurer
+that the interface can bring up, and it can grow from there.
+
+TWO RULES, so it cannot rot and cannot surprise:
+
+  1. THE ROWS ARE THE TEMPLATE, never a list in here. config/config.json
+     carries every key, its default and a `_key` note (no hidden
+     defaults), so a key added there appears
+     here with its help text and nothing needs editing twice.
+  2. IT WRITES ONE LAYER - the home file, via `sessionview-config set`,
+     which is the single writer. Stores and projects own layers 3 and 4; a
+     UI that can quietly write into a project file is a trap.
+
+Keys: j/k or arrows move · Enter edits (a bool toggles) · d restores the
+default · r reloads · q quits. Nothing is written until you press Enter.
+"""
+import curses, json, os, subprocess, sys, textwrap
+
+SESSIONVIEW_ROOT = os.environ.get("SESSIONVIEW_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+CFG = os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config")
+TEMPLATE = os.path.join(SESSIONVIEW_ROOT, "config", "config.json")
+
+
+def run(*a):
+    p = subprocess.run([CFG, *a], capture_output=True, text=True)
+    return p.returncode, p.stdout.strip(), p.stderr.strip()
+
+
+def rows():
+    """(key, value, note, source) for every template key, in template order."""
+    tpl = json.load(open(TEMPLATE))
+    # JSON, not `dump --where`: several real values CONTAIN TABS (mid_format,
+    # agent_format ...) and a tab-separated reader silently truncates them -
+    # it showed a user's agent_format as "{glyph} {at}{name}" with the window half
+    # missing, which reads as a corrupt setting.
+    try:
+        cur_raw = json.loads(run("dump")[1])
+    except Exception:
+        cur_raw = {}
+    cur = {k: shown(v) for k, v in cur_raw.items()}
+    src = {}
+    r = []
+    for k, default in tpl.items():
+        if k.startswith("_"):
+            continue
+        # "mine" = DIFFERS FROM THE SHIPPED DEFAULT, not "present in the home
+        # file": `init` copies the whole template into the home file on first
+        # read, so every key is in that layer and a source test marks the lot.
+        # What a user wants to see is what they have CHANGED.
+        r.append({"key": k, "value": cur.get(k, ""), "default": default,
+                  "note": tpl.get("_" + k) or "", "src": src.get(k, ""),
+                  "mine": cur.get(k, "") != shown(default)})
+    return r
+
+
+def shown(v):
+    """Render a default the way `sessionview-config` renders a value."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return v
+    return json.dumps(v, ensure_ascii=False)
+
+
+def as_text():
+    for r in rows():
+        mark = "*" if r["mine"] else " "
+        print(f"{mark} {r['key']:<24} {r['value']}")
+    print("\n* = set by you; the rest are defaults from the template")
+
+
+def edit(stdscr, r):
+    """Prompt for a new value. Returns a message, or None when nothing changed."""
+    h, w = stdscr.getmaxyx()
+    if isinstance(r["default"], bool):
+        new = "false" if r["value"] == "true" else "true"
+    else:
+        curses.echo()
+        curses.curs_set(1)
+        stdscr.move(h - 1, 0)
+        stdscr.clrtoeol()
+        stdscr.addstr(h - 1, 0, f" {r['key']} = ", curses.A_BOLD)
+        stdscr.addstr(r["value"][:w - len(r["key"]) - 6])
+        try:
+            new = stdscr.getstr().decode()
+        except Exception:
+            new = None
+        curses.noecho()
+        curses.curs_set(0)
+        if new is None:
+            return None
+        new = new.strip() or r["value"]
+        if new == r["value"]:
+            return None
+    rc, out, err = run("set", r["key"], new)
+    return (err or "refused") if rc else f"{r['key']} = {new}"
+
+
+def screen(stdscr):
+    curses.curs_set(0)
+    stdscr.keypad(True)
+    data, sel, msg, top = rows(), 0, "", 0
+    while True:
+        h, w = stdscr.getmaxyx()
+        body = max(3, h - 6)
+        if sel < top: top = sel
+        if sel >= top + body: top = sel - body + 1
+        stdscr.erase()
+        stdscr.addstr(0, 0, " sessionview settings ".ljust(w - 1)[:w - 1], curses.A_REVERSE)
+        for i, r in enumerate(data[top:top + body]):
+            y = i + 1
+            mark = "*" if r["mine"] else " "
+            line = f" {mark} {r['key']:<24} {r['value']}"
+            stdscr.addstr(y, 0, line[:w - 1],
+                          curses.A_REVERSE if top + i == sel else curses.A_NORMAL)
+        r = data[sel]
+        note = r["note"] or f"default: {json.dumps(r['default'])}"
+        for i, line in enumerate(textwrap.wrap(note, max(20, w - 2))[:3]):
+            stdscr.addstr(body + 2 + i, 1, line[:w - 2], curses.A_DIM)
+        foot = " j/k move · enter edit · d default · r reload · q quit "
+        stdscr.addstr(h - 2, 0, (msg or foot).ljust(w - 1)[:w - 1],
+                      curses.A_BOLD if msg else curses.A_DIM)
+        stdscr.refresh()
+        try:
+            c = stdscr.getch()
+        except KeyboardInterrupt:
+            return
+        msg = ""
+        if c in (ord("q"), 27):
+            return
+        elif c in (ord("j"), curses.KEY_DOWN):
+            sel = min(sel + 1, len(data) - 1)
+        elif c in (ord("k"), curses.KEY_UP):
+            sel = max(sel - 1, 0)
+        elif c in (ord("r"),):
+            data, msg = rows(), "reloaded"
+        elif c in (ord("d"),):
+            if data[sel]["mine"]:
+                rc, out, err = run("unset", data[sel]["key"])
+                if rc:   # not in the home file at all: write the default back
+                    rc, out, err = run("set", data[sel]["key"], shown(data[sel]["default"]))
+                msg = err if rc else f"{data[sel]['key']} back to its default"
+                data = rows()
+            else:
+                msg = "already the default"
+        elif c in (10, 13, curses.KEY_ENTER):
+            m = edit(stdscr, data[sel])
+            if m:
+                msg = m
+                data = rows()
+
+
+if __name__ == "__main__":
+    if "--list" in sys.argv:
+        as_text()
+    elif "-h" in sys.argv or "--help" in sys.argv:
+        print(__doc__.strip())
+    else:
+        curses.wrapper(screen)

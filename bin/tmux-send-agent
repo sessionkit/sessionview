@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# tmux-send-agent PANE [WORDS...] - the agent pane menu's one action: mail the
+# agent in PANE a subject-only message, "<words> EOM" (no words = "speak").
+#
+# Shipped with session view because the right-click menu belongs in session
+# view. It came from
+# dotfiles/tmux, where it ran an untracked ~/bin/send that still called the
+# retired `session mail send`; it now calls sessionmail's `message send`
+# itself - one dependency, sessionmail.
+#
+# WHO IT IS FROM - the human clicking, never an agent's identity:
+#   bin/sessionview-from ($SESSIONVIEW_FROM, $SESSIONVIEW_MENU_FROM, config
+#   mail_from, config pane_menu_from, $USER, "sessionview"). Set mail_from
+#   when your login name is not your mail name.
+#
+# WHERE IT GOES - the pane's SESSION box when its title carries a live short
+# sid (control pokes go to the session, not the seat), else the seat address
+# read from the title. Titles look like
+# "✳ super.taskmaster+8206b273", "✳ helper:.helper:73f2f616",
+# "✳ acme+super.0bb870c2".
+set -euo pipefail
+
+pane="${1:?usage: tmux-send-agent <pane> [words...]}"; shift || true
+[ "${1:-}" = "--" ] && shift
+subject="${*:-speak} EOM"
+
+here="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+from="$("$here/sessionview-from")"
+
+# run-shell inherits the tmux server's PATH, which may predate an install.
+message_bin="$(command -v message || true)"
+[ -n "$message_bin" ] || message_bin="$HOME/.local/bin/message"
+if [ ! -x "$message_bin" ]; then
+  tmux display-message -t "$pane" "agent menu: no 'message' command (install sessionmail)"
+  exit 3
+fi
+
+title="$(tmux display-message -p -t "$pane" '#{pane_title}')"
+
+to=""
+# the session box: the last +field, :field or .field that is 8 hex
+for cand in "${title##*+}" "${title##*:}" "${title##*.}"; do
+  if printf '%s' "$cand" | grep -qE '^[0-9a-f]{8}$'; then
+    for d in "$HOME/.mail/agents/$cand"*/; do
+      [ -d "$d" ] && { to="$(basename "$d")"; break; }
+    done
+    break
+  fi
+done
+shown="session ${to%%-*}"
+if [ -z "$to" ]; then
+  # the seat: role.scope[+ext] first, else a `session start` title's first :field
+  addr="$(printf '%s\n' "$title" | grep -oE '[a-z_][a-z0-9_+-]*\.[A-Za-z0-9][A-Za-z0-9._-]*(\+[A-Za-z0-9._-]+)*' | head -1 || true)"
+  [ -n "$addr" ] || addr="$(printf '%s\n' "$title" | sed -nE 's/^[^ ]+ ([a-z][a-z0-9_-]*):.*$/\1/p' | head -1 || true)"
+  if [ -z "$addr" ]; then
+    tmux display-message -t "$pane" "agent menu: no agent address in pane title '$title'"
+    exit 2
+  fi
+  # drop a trailing sid however it is hung on (+sid or .sid); keep a real +ext
+  to="$(printf '%s' "$addr" | sed -E 's/[+.][0-9a-f]{8}$//' | tr '[:upper:]' '[:lower:]')"
+  shown="$to"
+fi
+
+# sessionview-send unsets EMAIL and TM_AGENT_ADDRESS: sessionmail reads them
+# BEFORE CLAUDE_CODE_AGENT, and run-shell hands us the tmux server's
+# environment, which may be a worker's (found in review).
+# SESSIONVIEW_FROM carries the name resolved above, so it is resolved once.
+if out="$(SESSIONVIEW_FROM="$from" \
+            "$here/sessionview-send" "$to" --subject "$subject" --no-body </dev/null 2>&1)"; then
+  tmux display-message -t "$pane" "sent '${subject% EOM}' -> $shown (from $from)"
+else
+  tmux display-message -t "$pane" "send FAILED -> $shown: ${out##*$'\n'}"
+  exit 1
+fi

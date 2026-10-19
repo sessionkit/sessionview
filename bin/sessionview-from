@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# sessionview-from - print the name session view sends mail AS: the human at
+# the keyboard, never an agent's identity and never a name baked in here.
+#
+# The ONE resolver. The sidebar's mail, every plugin action that mails, the
+# voicemode speak script and the agent pane menu (tmux-send-agent) all reach
+# it through bin/sessionview-send. First non-empty wins:
+#
+#   1. $SESSIONVIEW_FROM
+#   2. $SESSIONVIEW_MENU_FROM            (the older name, still honoured)
+#   3. config `mail_from`                (sessionview-config get mail_from)
+#   4. config `pane_menu_from`           (the older key, still honoured)
+#   5. $USER
+#   6. "sessionview"                     (names nobody)
+#
+# Set one of the first four when your login name is not your mail name:
+#   sessionview-config set mail_from NAME
+set -euo pipefail
+
+here="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+
+cfg() {   # a config value, or nothing; a missing key or a broken file is nothing
+  local v
+  v="$("$here/sessionview-config" get "$1" 2>/dev/null)" || return 0
+  case "$v" in null|false|true) return 0 ;; esac
+  printf '%s' "$v"
+}
+
+trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
+
+from="$(trim "${SESSIONVIEW_FROM:-}")"
+[ -n "$from" ] || from="$(trim "${SESSIONVIEW_MENU_FROM:-}")"
+[ -n "$from" ] || from="$(trim "$(cfg mail_from)")"
+[ -n "$from" ] || from="$(trim "$(cfg pane_menu_from)")"
+[ -n "$from" ] || from="$(trim "${USER:-}")"
+[ -n "$from" ] || from="sessionview"
+printf '%s\n' "$from"

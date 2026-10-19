@@ -1,0 +1,445 @@
+#!/bin/bash
+# sessionview-session — open a tmux SESSION for a project, with its standard tabs.
+#
+#   sessionview-session NAME [--repo DIR] [--plain] [--print]
+#   sessionview-session NAME --list-windows        the configured windows that apply
+#                                                  to NAME: "name<TAB>hint", one per line
+#   sessionview-session NAME --window WNAME        open ONE configured window in the
+#                                                  EXISTING session NAME (rc 3: WNAME is
+#                                                  not a configured window that applies)
+#   sessionview-session NAME --store-view STORENAME --socket SOCK --store PATH [--fresh]
+#                                                  STORE MODE: NAME is the store's session,
+#                                                  its tabs the `store_windows` list (below)
+#
+# THE TABS ARE CONFIG, NOT CODE: the `windows` list in config/config.json (the
+# cascade: template > ~/.sessionkit/view/settings/view.json > store > project). It is a
+# configurable set of standard windows - one list builds the session AND
+# feeds the sidebar's new-tab picker.
+# The shipped list is a layout first built by hand for one project:
+#   repo     the project's repo, a shell - always a shell (was `code`; renamed
+#            because it is not always code, it is the repository)
+#   editor   the repo, the editor on its README - picker only (auto: false)
+#            unless --nvim / code_nvim, which opens it and lands on it
+#   git      the repo, lazygit - with a CONSOLE: a shell pane UNDER lazygit
+#            (pane 1; lazygit is pane 0, so drive lazygit by its pane, not the
+#            window), in the repo, one row until you select it, then 20% of
+#            the window, one row again when you select lazygit. Any entry
+#            gets one with `console: true`; it is sized by hooks on THAT
+#            window only (set-hook -w window-pane-changed / window-resized),
+#            never a global option or hook
+#   project  the project's dir in the taskmaster store, the editor on PROJECT.md
+#   tasks    that dir, a `tasks` alias - picker only (auto: false): its live
+#            list polled at 20-30% CPU for 90 min (measured), so it never
+#            opens unasked
+#   messages that dir, the project's mail read-only in neomutt - only when
+#            THIS store has its box (`message path STORE/NAME`, the store's
+#            identity): it checks whether a mailbox exists and opens it only
+#            if it does
+#   shell    the root - the fallback when nothing else applies; pin it
+#            (auto: true) and every session gets one
+# {editor} is VISUAL, else EDITOR, else nvim; when it is nvim it LISTENS on the
+# socket show-me looks for (<socket dir>/nvim-show-pane-<pane id>).
+# Every window is a SHELL with the tool typed into it, so quitting nvim or
+# lazygit leaves a prompt in the right directory. An entry's `when` is a NAME
+# this script tests (always | has_repo | has_projdir | has_mail | fallback) and
+# its `cwd` a NAME it resolves (root | repo | projdir): neither is evaluated.
+# Its `command` IS run: typed into the window's shell with Enter, after exactly
+# five substitutions ({editor} {readme} {pmd} {project} {store}, the store's
+# identity; store mode adds one, below). So a `command` is read ONLY from the
+# template and the home file (~/.sessionkit/view/settings/view.json): a store's or a project's
+# .sessionview may reorder the tabs and add plain ones, never say what they
+# run (sessionview-config drops it and names the file on stderr).
+# One switch: SESSIONVIEW_PROFILE=0 or --plain gives a single shell window instead.
+#
+# STORE MODE
+# The store view's session. ROOT is the store (--store), the list is
+# `store_windows`, and PROJDIR is the STORE PROJECT, never derived from NAME:
+# PATH/projects/store, else PATH/projects/STORENAME (an older store's name), else
+# none - no tasks tab, no error. Its own names: when has_store_project |
+# has_slipbox | has_scripts | has_store_mail (`message path STORENAME`, the
+# store box by IDENTITY, never by the session name), cwd store | slipbox |
+# scripts, {store} is STORENAME, and {store_project} the project's name. An
+# EXISTING session is kept and only the store tabs it lacks are ADDED, matched
+# by name, appended with new-window -d: never closed, renamed or reordered.
+# The tab you land on is chosen only when this run created the session or
+# --fresh says the caller booted it a moment ago. It refuses (exit 2) to
+# create a session named `store` and to start a down server: that is
+# `tm store boot`'s job. No recency line: a store is not a project.
+#
+# REPO RESOLUTION, in order: `tm project get NAME`'s git url as ~/Code/<url
+# with : -> /> minus .git, when that dir exists; else the first git repo a
+# ~/Code/*/*/NAME glob finds; else one under `project_dirs` (below); else no
+# repo, which is allowed. --repo DIR overrides. An existing session is left as it is (just
+# given the sessionview look). Records NAME in ~/.local/state/sessionview/recent.tsv for
+# the picker's "most recently opened first".
+set -u
+SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
+usage() { sed -n '2,67p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+NAME=""; REPO=""; PLAIN="${SESSIONVIEW_PROFILE:-1}"; PRINT=0; WINDOW=""; LIST=0; STOREVIEW=""; FRESH=0
+# --socket: the tmux server the session is built on (a taskmaster store has
+# its own, tm-store-NAME); default = the server in $TMUX, else the plain one.
+# --store: the taskmaster store dir whose projects/NAME is the project dir;
+# default ~/.taskmaster (the ACTIVE store). Both come from the sidebar's
+# viewed store, so "select a store, add a project" lands on that store's
+# server.
+SOCK="${SESSIONVIEW_SOCK:-}"; STORE=""
+# --nvim / SESSIONVIEW_CODE_NVIM=1 / code_nvim: open the `editor` window at session
+# open and land on it (it is picker-only otherwise). Off by default: nvim is
+# not started unasked. The listening socket (socket dir = $TMPDIR >
+# $XDG_RUNTIME_DIR > ~/.local/run, show-me's own rule) rides on {editor}
+# whenever it resolves to nvim - see editor_for.
+NVIM="${SESSIONVIEW_CODE_NVIM:-0}"
+while [ $# -gt 0 ]; do case "$1" in
+  -h|--help) usage;;
+  --repo) REPO="$2"; shift;;
+  --socket) SOCK="$2"; shift;;
+  --store) STORE="$2"; shift;;
+  --nvim) NVIM=1;;
+  --plain) PLAIN=0;;
+  --print) PRINT=1;;
+  --window) WINDOW="$2"; shift;;
+  --list-windows) LIST=1;;
+  --store-view) STOREVIEW="$2"; shift;;
+  --fresh) FRESH=1;;
+  -*) echo "sessionview-session: unknown flag $1" >&2; usage 2;;
+  *) NAME="$1";;
+esac; shift; done
+[ -n "$NAME" ] || { echo "sessionview-session: NAME required" >&2; usage 2; }
+[ "$PLAIN" = 0 ] && PLAIN=1 || PLAIN=0     # PLAIN=1 means: no profile
+
+# -- where things are ---------------------------------------------------------
+if [ -z "$SOCK" ]; then SOCK="$(basename "${TMUX%%,*}" 2>/dev/null)"; SOCK="${SOCK:-default}"; fi
+tmux() { command tmux -L "$SOCK" "$@"; }   # every tmux below, frame.conf's included
+[ -n "$STORE" ] || STORE="$(readlink -f "$HOME/.taskmaster" 2>/dev/null || echo "$HOME/.taskmaster")"
+PROJDIR=""; [ -d "$STORE/projects/$NAME" ] && PROJDIR="$STORE/projects/$NAME"
+# Store mode: PROJDIR is the store project (projects/store, else
+# projects/STORENAME), and NAME plays no
+# part in it - a second store's legacy `store` session would otherwise find
+# projects/store only by the accident of its name. No repo: a store has none.
+STOREPROJ=""; WKEY=windows
+if [ -n "$STOREVIEW" ]; then
+  WKEY=store_windows; PROJDIR=""
+  if [ -d "$STORE/projects/store" ]; then PROJDIR="$STORE/projects/store"
+  elif [ -d "$STORE/projects/$STOREVIEW" ]; then PROJDIR="$STORE/projects/$STOREVIEW"; fi
+  [ -n "$PROJDIR" ] && STOREPROJ="$(basename "$PROJDIR")"
+fi
+# STOREID: the store's IDENTITY, the slug its mail lives under. A
+# project session held the store only as a PATH, so its mail was looked up by
+# the bare NAME - and a bare name resolves through the host-global postfix
+# map: a second store's `store` session opened the FIRST store's box.
+# Store mode: the identity it was given. Project mode: the `tm store list`
+# record whose realpath is --store's, its `store` field else `name` (the
+# sidebar's store_name() rule; a store named `default` is mailed under its
+# `store` slug), never the path's basename. The no-identity rule: no
+# registry at all (no tm, or it lists nothing / fails) = the bare name, as
+# before - a user with no taskmaster, nothing to collide with; a registry that does not hold
+# this PATH = STOREMISS, no messages tab: "its own store's box or none".
+STOREID=""; STOREMISS=0
+if [ -n "$STOREVIEW" ]; then STOREID="$STOREVIEW"
+elif command -v tm >/dev/null 2>&1; then
+  STOREID="$(tm store list -f json 2>/dev/null | python3 -c 'import json,os,sys
+try: recs = json.load(sys.stdin)
+except Exception: recs = []
+recs = [r for r in (recs if isinstance(recs, list) else []) if isinstance(r, dict) and r.get("path")]
+if not recs: sys.exit(0)                      # no registry: bare name
+want = os.path.realpath(sys.argv[1])
+for r in recs:
+    if os.path.realpath(os.path.expanduser(str(r["path"]))) == want:
+        ident = r.get("store") or r.get("name")
+        if ident: print(ident); sys.exit(0)
+        sys.exit(3)                           # its record names no identity: none
+sys.exit(3)                                   # a registry, and PATH is not in it' "$STORE")" || STOREMISS=1
+  [ "$STOREMISS" = 1 ] && STOREID=""
+fi
+if [ -z "$REPO" ] && [ -z "$STOREVIEW" ]; then
+  # Asked FROM the store: `tm project get` has no --store flag and scopes by
+  # cwd, so asked from here it answered for the ACTIVE store - with three
+  # things of the same name (the store, a project in it, a project in another
+  # store) that was the wrong one.
+  URL="$(cd "$STORE" 2>/dev/null && tm project get "$NAME" -f json 2>/dev/null | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("url") or "")
+except Exception: print("")')"
+  if [ -n "$URL" ]; then
+    D="$HOME/Code/${URL//://}"; D="${D%.git}"
+    [ -d "$D" ] && REPO="$D"
+  fi
+  if [ -z "$REPO" ]; then
+    for D in "$HOME"/Code/*/*/"$NAME"; do [ -d "$D/.git" ] && { REPO="$D"; break; }; done
+  fi
+  # Projects that live on disk, not in a store: the same `project_dirs` the
+  # sidebar OFFERS names from must be where a picked name OPENS from, or the
+  # picker lists things that land in $HOME (a new user with no taskmaster
+  # and their work in ~/workspace). Depth is the
+  # config's; `.git` may be a file, so -e, not -d.
+  if [ -z "$REPO" ]; then
+    DIRS="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get project_dirs --store "$STORE" 2>/dev/null \
+            | python3 -c 'import json,sys,os
+try: v = json.load(sys.stdin)
+except Exception: v = []
+for d in (v if isinstance(v, list) else []): print(os.path.expanduser(str(d)))' 2>/dev/null)"
+    DEPTH="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get project_dirs_depth --store "$STORE" 2>/dev/null)"
+    case "$DEPTH" in ''|*[!0-9]*) DEPTH=2;; esac
+    [ "$DEPTH" -gt 4 ] && DEPTH=4
+    OLDIFS="$IFS"; IFS='
+'
+    for B in $DIRS; do
+      [ -d "$B" ] || continue
+      L=1; PAT="$B/$NAME"
+      while [ "$L" -le "$DEPTH" ]; do
+        for D in $PAT; do [ -e "$D/.git" ] && { REPO="$D"; break; }; done
+        [ -n "$REPO" ] && break
+        L=$((L + 1)); PAT="$B$(printf '/*%.0s' $(seq 1 $((L - 1))))/$NAME"
+      done
+      [ -n "$REPO" ] && break
+    done
+    IFS="$OLDIFS"
+  fi
+fi
+ROOT="${REPO:-${PROJDIR:-$HOME}}"
+[ -n "$STOREVIEW" ] && ROOT="$STORE"
+README=""; if [ -n "$REPO" ]; then for f in README.md README readme.md README.rst; do [ -f "$REPO/$f" ] && { README="$f"; break; }; done; fi
+PMD=""; [ -n "$PROJDIR" ] && [ -f "$PROJDIR/PROJECT.md" ] && PMD="PROJECT.md"
+
+say() { [ "$PRINT" = 1 ] && printf '%s\n' "$*" >&2; }
+show_socket_dir() {   # show-me's get_socket_dir(), verbatim in spirit
+  if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then echo "${TMPDIR%/}"
+  elif [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ]; then echo "${XDG_RUNTIME_DIR%/}"
+  else mkdir -p "$HOME/.local/run" && chmod 700 "$HOME/.local/run"; echo "$HOME/.local/run"; fi
+}
+say "session=$NAME socket=$SOCK store=$STORE root=$ROOT repo=${REPO:-NONE} projdir=${PROJDIR:-NONE} store_id=${STOREID:-$([ "$STOREMISS" = 1 ] && echo UNREGISTERED || echo NONE)} profile=$([ "$PLAIN" = 1 ] && echo off || echo on)$([ -n "$STOREVIEW" ] && echo " store_view=$STOREVIEW store_project=${STOREPROJ:-NONE} fresh=$FRESH")"
+
+# -- cascading config: built-in > host > store > project, all JSON (JSON
+# everywhere).
+# bin/sessionview-config owns the cascade: config/config.json (the template) >
+# ~/.sessionkit/view/settings/view.json > STORE/.sessionview > `.sessionview` walked UP
+# from the project's root, nearest last so it wins. code_nvim is the first
+# knob; --nvim / SESSIONVIEW_CODE_NVIM=1 are explicit and beat the cascade. Every
+# file read is named in --print so a surprise has a path.
+cascade() {  # cascade KEY -> "value<TAB>path" of the layer that set it, or "" if none did
+  "$SESSIONVIEW_ROOT/bin/sessionview-config" get "$1" --store "$STORE" --project "$ROOT" --where 2>/dev/null || true
+}
+if [ "$NVIM" = 0 ]; then
+  c="$(cascade code_nvim)"
+  case "$c" in true*) NVIM=1; say "code_nvim = true from ${c#*	}";; esac
+fi
+
+# -- the windows: config, not code -----------------------------------------------
+# `sessionview-config windows` = the cascade's `windows` list as TSV, sorted by
+# position (no field empty: `-` = no command). The predicates and dirs are
+# NAMES, tested here - better not to run code on the names of things;
+# adding one is a
+# deliberate edit below, the right amount of friction for a thing that decides
+# whether a shell command runs.
+ED="${VISUAL:-${EDITOR:-nvim}}"        # bin/tmux-sidebar:1590's rule, the same in both places
+t() { say "  tmux $*"; [ "$PRINT" = 1 ] || tmux "$@"; }
+win() {  # win NAME DIR [COMMAND]  -- a shell window; COMMAND expanded once it exists, then typed in
+  local n="$1" d="$2" c; shift 2
+  if [ "$FIRST" = 1 ]; then t new-session -d -s "$NAME" -c "$d" -n "$n"; FIRST=0
+  else t new-window -t "=$NAME" -c "$d" -n "$n"; fi
+  c="$(expand "$*" "$n")"
+  [ -n "$c" ] && t send-keys -t "=$NAME:$n" "$c" C-m
+}
+console() {  # console WNAME DIR -- a shell pane under WNAME's, one row, sized by WINDOW hooks
+  # -d: the tab's own pane (lazygit) stays active. Nothing typed: a plain shell
+  # in DIR. The console is known by its pane id (never reused on a server); the
+  # outer if-shell is "is it still in this window?", so a closed console makes
+  # the hooks do nothing rather than error. -w: this window's hooks only - no
+  # focus-events, no -g (pane-focus-in/out would need the global option).
+  local w="=$NAME:$1" p h
+  if [ "$PRINT" = 1 ]; then say "  tmux split-window -v -d -l 1 -t $w -c $2 -P -F #{pane_id}"; p='<console>'
+  else p="$(tmux split-window -v -d -l 1 -t "$w" -c "$2" -P -F '#{pane_id}')" && [ -n "$p" ] || return 0; fi
+  h="if-shell -F '#{P:#{?#{==:#{pane_id},$p},1,}}' { if-shell -F '#{==:#{pane_id},$p}' { resize-pane -t $p -y 20% } { resize-pane -t $p -y 1 } }"
+  t set-hook -w -t "$w" window-pane-changed "$h"
+  t set-hook -w -t "$w" window-resized "$h"   # a resize-window collapsed an ACTIVE console to 1 (tmux 3.7c)
+}
+applies() {  # applies WHEN -> true when the named predicate holds (fallback: never here, see below)
+  case "$1" in
+    always) return 0;;
+    has_repo) [ -n "$REPO" ];;
+    has_projdir) [ -n "$PROJDIR" ];;
+    # the project HAS a mailbox: `message path NAME` resolves one (60 ms,
+    # measured). A project with a mailbox once opened with no tab, so this
+    # checks whether a mailbox exists and opens it if it does - the box is
+    # the fact, not a line in PROJECT.md (which an earlier design used).
+    # No `message` on PATH = no box can be opened = no tab.
+    # Store-QUALIFIED: `message path STOREID/NAME`, this store's box
+    # or none - never another store's that shares the name; no tab at all
+    # when the registry does not know this store (STOREMISS, above).
+    has_mail) [ "$STOREMISS" = 0 ] && command -v message >/dev/null 2>&1 && message path "${STOREID:+$STOREID/}$NAME" >/dev/null 2>&1;;
+    # store mode only: a project session never offers these
+    has_store_project) [ -n "$STOREVIEW" ] && [ -n "$PROJDIR" ];;
+    has_slipbox) [ -n "$STOREVIEW" ] && [ -d "$STORE/slipbox" ];;
+    has_scripts) [ -n "$STOREVIEW" ] && [ -d "$STORE/scripts" ];;
+    # the STORE box, by identity: never `message path store`, which may be
+    # another store's `store` PROJECT box
+    has_store_mail) [ -n "$STOREVIEW" ] && command -v message >/dev/null 2>&1 && message path "$STOREVIEW" >/dev/null 2>&1;;
+    fallback) return 1;;
+    *) say "  when=$1: not a predicate this script knows (always has_repo has_projdir has_mail has_store_project has_slipbox has_scripts has_store_mail fallback)"; return 1;;
+  esac
+}
+dir_of() {  # dir_of CWD -> the path, or "" when that dir is unknown for this project
+  case "$1" in
+    root) echo "$ROOT";; repo) echo "$REPO";; projdir) echo "$PROJDIR";;
+    store) echo "$STORE";;
+    slipbox) [ -d "$STORE/slipbox" ] && echo "$STORE/slipbox" || echo "";;
+    scripts) [ -d "$STORE/scripts" ] && echo "$STORE/scripts" || echo "";;
+    *) say "  cwd=$1: not a dir this script knows (root repo projdir store slipbox scripts)"; echo "";;
+  esac
+}
+editor_for() {  # editor_for WINDOW -> what {editor} becomes there. nvim LISTENS on the socket
+  # show-me looks for (<socket dir>/nvim-show-pane-<pane id>): a code window opened
+  # with neovim has the socket running, so show-me can reach it;
+  # any other editor is typed as it is. No window yet (--list-windows): the bare name.
+  local pid
+  case "$(basename "${ED%% *}")" in
+    nvim) [ -n "$1" ] || { printf '%s' "$ED"; return; }
+          if [ "$PRINT" = 1 ]; then pid='<pane>'; else pid="$(tmux display-message -p -t "=$NAME:$1" '#{pane_id}')"; fi
+          # and ROOTS at the window's cwd: LazyVim's <leader>e opens neo-tree at LazyVim.root(),
+          # which walks up to .git - in the project window that is the STORE, not the project
+          # (the project directory should be the root). -c, not --cmd: LazyVim's own
+          # options.lua overwrites vim.g.root_spec at load.
+          # Only nvims this script opens get it; the user's config is untouched.
+          printf '%s --listen %s -c %s' "$ED" "$(printf %q "$(show_socket_dir)/nvim-show-pane-${pid#%}")" "$(printf %q 'lua vim.g.root_spec={"cwd"}')";;
+    *) printf '%s' "$ED";;
+  esac
+}
+expand() {  # expand COMMAND [WINDOW] -> the line typed into it ("-" = none); six substitutions, no evaluation
+  local c="$1" e; [ "$c" = "-" ] && c=""
+  case "$c" in *"{editor}"*) e="$(editor_for "${2:-}")"; c="${c//\{editor\}/$e}";; esac
+  c="${c//\{readme\}/$README}"; c="${c//\{pmd\}/$PMD}"; c="${c//\{project\}/$(printf %q "$NAME")}"
+  # {store} = the identity (store mode, and project mode too, "" when
+  # unknown), {store_project} = the store project's name
+  c="${c//\{store_project\}/$(printf %q "$STOREPROJ")}"; c="${c//\{store\}/$(printf %q "$STOREID")}"
+  c="${c#"${c%%[![:space:]]*}"}"; c="${c%"${c##*[![:space:]]}"}"; printf '%s' "$c"
+}
+windows() { "$SESSIONVIEW_ROOT/bin/sessionview-config" windows --key "$WKEY" --store "$STORE" --project "$ROOT" 2>/dev/null; }
+# --nvim / code_nvim: the `editor` window opens by itself at session open and is
+# the one you land on. This once typed nvim into the REPO window, so with it
+# on, repo and editor were the same tab twice. repo is a shell, always.
+
+# -- --list-windows: what the new-tab picker may offer for NAME -------------------
+# The windows whose predicate holds here (fallback ones always: a shell at the
+# root is never wrong), with a hint - the command, else the directory. This is
+# the ONE evaluator of `when`, so the sidebar cannot offer a git tab where
+# there is no repo.
+if [ "$LIST" = 1 ]; then
+  while IFS=$'\t' read -r pos n when cwd cmd focus auto console; do
+    { applies "$when" || [ "$when" = fallback ]; } || continue
+    d="$(dir_of "$cwd")"; [ -n "$d" ] || continue
+    c="$(expand "$cmd")"; TILDE='~'; printf '%s\t%s\n' "$n" "${c:-${d/#$HOME/$TILDE}}"   # no window yet: {editor} is the bare name
+  done < <(windows)
+  exit 0
+fi
+
+# -- --window WNAME: one configured window into the EXISTING session --------------
+# The picker's pick. Appended to the tab order (position orders the initial
+# build; moving live windows about is not this script's business). rc 3 =
+# not a configured window that applies here, so the caller makes a plain tab.
+if [ -n "$WINDOW" ]; then
+  tmux has-session -t "=$NAME" 2>/dev/null || { echo "sessionview-session: no session $NAME on $SOCK" >&2; exit 2; }
+  FIRST=0
+  while IFS=$'\t' read -r pos n when cwd cmd focus auto console; do
+    [ "$n" = "$WINDOW" ] || continue
+    { applies "$when" || [ "$when" = fallback ]; } || { echo "$WINDOW: when=$when does not hold for $NAME" >&2; exit 3; }
+    d="$(dir_of "$cwd")"; [ -n "$d" ] || { echo "$WINDOW: cwd=$cwd is unknown for $NAME" >&2; exit 3; }
+    win "$n" "$d" "$cmd"; [ "$console" = true ] && console "$n" "$d"
+    t select-window -t "=$NAME:$n"
+    say "done"; exit 0
+  done < <(windows)
+  echo "$WINDOW: not a configured window" >&2; exit 3
+fi
+
+# -- store mode: the two refusals ---------------------------------------------
+# A down server is `tm store boot`'s to start (allowlisted env, TASKMASTER_STORE
+# seeded): a new-session here would start it with OUR environment.
+# And sessionview never creates a session named `store` again;
+# the sidebar never asks for one, so this is a guard, not a path. --print only
+# says what a real run would refuse, and goes on to print the plan.
+EXISTS=0; tmux has-session -t "=$NAME" 2>/dev/null && EXISTS=1
+if [ -n "$STOREVIEW" ] && [ "$EXISTS" = 0 ]; then
+  if ! tmux list-sessions >/dev/null 2>&1; then
+    m="server $SOCK is down: tm store boot $STOREVIEW first"
+    [ "$PRINT" = 1 ] && say "a real run refuses: $m" || { echo "sessionview-session: $m" >&2; exit 2; }
+  fi
+  if [ "$NAME" = store ]; then
+    m="never creates a 'store' session (no session store on $SOCK)"
+    [ "$PRINT" = 1 ] && say "a real run refuses: $m" || { echo "sessionview-session: $m" >&2; exit 2; }
+  fi
+fi
+
+# -- store mode, existing: keep it, ADD the store tabs it lacks ------------------
+# Only ADD - never close, rename or reorder a window, the user may be
+# sitting in it (a second store's `store` held three live windows, one with
+# work in progress). Matched by name, so a second run adds nothing and that
+# store's own `messages` (project mode's) is left alone with no twin. -d and
+# -a after {end}: the current window does not move, and a gap in the indices
+# is not filled (a plain new-window would slot in BEFORE a later window).
+# The focus tab is chosen only with --fresh (the caller booted it just now).
+if [ -n "$STOREVIEW" ] && [ "$EXISTS" = 1 ]; then
+  HAVE="$(tmux list-windows -t "=$NAME" -F '#{window_name}' 2>/dev/null)"
+  say "exists: adding the store tabs it lacks (has: $(printf '%s' "$HAVE" | tr '\n' ' '))"
+  FOCUS=""; ADDED=""
+  if [ "$PLAIN" = 0 ]; then
+    while IFS=$'\t' read -r pos n when cwd cmd focus auto console; do
+      if [ "$when" = fallback ]; then [ "$auto" = true ] || continue   # the safety net: it HAS windows
+      else applies "$when" || continue; [ "$auto" = false ] && continue; fi
+      d="$(dir_of "$cwd")"; [ -n "$d" ] || continue
+      [ "$focus" = true ] && [ -z "$FOCUS" ] && FOCUS="$n"
+      if printf '%s\n' "$HAVE" | grep -Fxq -- "$n"; then say "  $n: already a window, left as is"; continue; fi
+      t new-window -d -a -t "=$NAME:{end}" -c "$d" -n "$n"
+      c="$(expand "$cmd" "$n")"; [ -n "$c" ] && t send-keys -t "=$NAME:$n" "$c" C-m
+      [ "$console" = true ] && console "$n" "$d"
+      [ -n "$ADDED" ] || ADDED="$n"
+    done < <(windows)
+  fi
+  if [ "$FRESH" = 1 ]; then
+    [ -n "$FOCUS" ] || FOCUS="$ADDED"
+    [ -n "$FOCUS" ] && t select-window -t "=$NAME:$FOCUS"
+  fi
+  [ "$PRINT" = 1 ] || { S="$NAME"; . "$SESSIONVIEW_ROOT/tmux/frame.conf"; }
+  say "done"; exit 0
+fi
+
+# -- existing: keep it, give it the look ---------------------------------------
+if [ "$EXISTS" = 1 ]; then
+  say "exists: left as is"
+  [ "$PRINT" = 1 ] || { S="$NAME"; . "$SESSIONVIEW_ROOT/tmux/frame.conf"; }
+  exit 0
+fi
+
+# -- create --------------------------------------------------------------------
+FIRST=1; FOCUS=""; FALLBACK=""
+if [ "$PLAIN" = 1 ]; then
+  win shell "$ROOT"
+else
+  while IFS=$'\t' read -r pos n when cwd cmd focus auto console; do
+    if [ "$when" = fallback ]; then
+      # auto true = PINNED: opens with every session (a user can pin it if
+      # they want); otherwise
+      # the safety net, opened after the loop only when nothing else was.
+      [ "$auto" = true ] || { FALLBACK="$FALLBACK$n	$cwd	$cmd	$console
+"; continue; }
+    else
+      applies "$when" || continue
+      if [ "$n" = editor ] && [ "$NVIM" = 1 ]; then auto=true; focus=true; FOCUS=""; fi   # code_nvim: the editor opens, and wins focus
+      [ "$auto" = false ] && { say "  $n: auto=false, picker only"; continue; }
+    fi
+    d="$(dir_of "$cwd")"; [ -n "$d" ] || continue
+    win "$n" "$d" "$cmd"; [ "$console" = true ] && console "$n" "$d"
+    [ "$focus" = true ] && [ -z "$FOCUS" ] && FOCUS="$n"
+  done < <(windows)
+  if [ "$FIRST" = 1 ] && [ -n "$FALLBACK" ]; then   # nothing applied: the fallback entries
+    while IFS=$'\t' read -r n cwd cmd console; do
+      [ -n "$n" ] || continue
+      d="$(dir_of "$cwd")"; [ -n "$d" ] && { win "$n" "$d" "$cmd"; [ "$console" = true ] && console "$n" "$d"; }
+    done <<<"$FALLBACK"
+  fi
+  [ "$FIRST" = 1 ] && win shell "$ROOT"       # no windows configured at all: one shell, as ever
+  if [ -n "$FOCUS" ]; then t select-window -t "=$NAME:$FOCUS"; else t select-window -t "=$NAME:0"; fi
+fi
+[ "$PRINT" = 1 ] || { S="$NAME"; . "$SESSIONVIEW_ROOT/tmux/frame.conf"; }
+# the picker's recency is PROJECTS: a store session never joins it
+[ "$PRINT" = 1 ] || [ -n "$STOREVIEW" ] || printf '%s\t%s\n' "$(date +%s)" "$NAME" >>"$SESSIONVIEW_STATE/recent.tsv"
+say "done"
+exit 0   # explicitly: `say` is false when not printing, and the last status was the script's rc (1)

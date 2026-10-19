@@ -1,0 +1,52 @@
+# SessionView's NeoMutt view of a project's mail - the `messages` tab.
+#
+# Sourced by the per-folder rc that bin/sessionview-messages writes (after the
+# four folder lines: mbox_type, folder, spoolfile, mark_old). Your own
+# ~/.sessionkit/view/settings/neomuttrc is sourced AFTER this one, so anything here can be
+# overridden there. neomutt runs with -F, so ~/.muttrc is not read at all -
+# this file and yours are the whole configuration.
+#
+# SessionView ships one global mutt configuration so every messages tab shows
+# mail the same way, threaded, and the user can see it and override it.
+
+# THREADED, newest at the top: a box is a tree (the root, its labels, their
+# items) and the index shows it as one - a reply under what it answers. The
+# thread with the most recent message comes first, and under a parent the
+# newest reply comes first, so the most recent messages are at the top.
+# Flat-by-date put a fresh reply to the root at the very bottom, far from its
+# parent.
+set sort=threads
+set sort_aux=reverse-last-date-received
+# Thread on In-Reply-To/References only. Without this neomutt also joins
+# messages whose SUBJECTS match, and in a box where every label is "[ASKS]"
+# that invents parents that never were.
+set strict_threads=yes
+# A compact tree: one column per level, not two.
+set narrow_tree=yes
+# Room for the subject, which carries the point: a short
+# date, a short sender, and the rest of the line for the subject.
+set date_format="%m-%d %H:%M"
+set index_format="%4C %Z %D %-12.12L %s"
+
+# SIDEBAR - the boxes on the left, one of them Asks. The ROWS are
+# per project, so bin/sessionview-messages writes them into the per-folder rc
+# (the box, Asks, Asks · threads) before sourcing this; this is the LOOK. When
+# it writes no rows (no notmuch) it sets sidebar_visible=no after this file.
+set sidebar_visible=yes
+set sidebar_width=22
+set sidebar_short_path=yes
+# The count is the total, not unread: -R never marks a message read and
+# `message mark` does not touch maildir flags, so an unread count here would
+# never move. mail_check_stats runs one notmuch count per row per minute
+# (mail_check_stats_interval, default 60).
+set mail_check_stats=yes
+set sidebar_format="%D%* %S"
+# Keys: Ctrl-n / Ctrl-p walk the rows, Ctrl-o opens the one under the cursor,
+# B hides and shows the sidebar (bounce is nothing in a read-only tab). Ctrl-o
+# needs `stty discard undef` on macOS; sessionview-messages runs it. In an Asks
+# row, + pulls that ask's whole thread in, replies included (entire-thread).
+bind index,pager \Cn sidebar-next
+bind index,pager \Cp sidebar-prev
+bind index,pager \Co sidebar-open
+bind index,pager B sidebar-toggle-visible
+bind index + entire-thread

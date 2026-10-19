@@ -1,0 +1,71 @@
+# session — the agent verbs. Settle, stand down and succeed are things any
+# agent should know how to do, whether or not it runs under taskmaster, so they
+# live here and not in the taskmaster plugin; continue is for when the network
+# drops. The bodies are worded as the tmux right-click menu (~/.tmux.conf)
+# words them. Every item is ONE argv, no shell; the body goes through a
+# 0600 file. {agent.address} is the seat's session id: a mail there reaches
+# exactly that seat and its own arm hears it.
+# Mail goes through sessionmail's `message send` (`session mail send` was
+# retired with the session repo). It has no --from: the sender is
+# the environment, so each item runs bin/sessionview-send, which sends AS the
+# human at the keyboard (bin/sessionview-from: $SESSIONVIEW_FROM, config
+# mail_from, ..., $USER) - still one argv, no shell. The path is relative to
+# this plugin's directory, which is the action's cwd.
+id = "session"
+name = "Session"
+requires = ["session", "message"]
+
+[[actions]]
+id = "message"
+title = "Message"
+key = "m"
+contexts = ["agent"]
+prompt = "mail"
+command = ["../../bin/sessionview-send", "{agent.address}", "-s", "{input_subject}", "-f", "{body}"]
+body = "{input}"
+
+[[actions]]
+id = "continue"
+title = "Continue"
+key = "o"
+contexts = ["agent"]
+command = ["../../bin/sessionview-send", "{agent.address}", "-s", "continue", "-f", "{body}"]
+body = "continue"
+
+[[actions]]
+id = "settle"
+title = "Settle"
+key = "e"
+contexts = ["agent"]
+command = ["../../bin/sessionview-send", "{agent.address}", "-s", "settle", "-f", "{body}"]
+body = "please settle your context, then park"
+
+[[actions]]
+id = "stand-down"
+title = "Stand down"
+key = "d"
+contexts = ["agent"]
+confirm = "stand down {agent.name}?"
+command = ["../../bin/sessionview-send", "{agent.address}", "-s", "stand down", "-f", "{body}"]
+body = "please settle your context, then release the seat"
+
+[[actions]]
+id = "succeed"
+title = "Succeed"
+key = "u"
+contexts = ["agent"]
+confirm = "succeed {agent.name}?"
+command = ["../../bin/sessionview-send", "{agent.address}", "-s", "succeed", "-f", "{body}"]
+body = "please settle your context, then succeed: start your successor, hand over, and release the seat"
+
+[[actions]]
+id = "start-agent"
+title = "Start an agent"
+key = "a"
+contexts = ["project"]
+# The sidebar's picker over `session start
+# --list-agents`, pinned names first; the pick rides as {input}. The last row,
+# "claude", is `-` = a plain claude with no agent file, which `empty` also means.
+pick = "agents"
+empty = "-"
+command = ["./start-agent", "{project.name}", "{project.path}", "{project.socket}"]

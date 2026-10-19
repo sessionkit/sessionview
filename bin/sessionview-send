@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# sessionview-send ADDRESS [message-send args...] - sessionmail's
+# `message send ADDRESS ...`, sent AS the human at the keyboard.
+#
+# `message send` has no --from: the sender is the environment. So this runs
+#   env -u EMAIL -u TM_AGENT_ADDRESS CLAUDE_CODE_AGENT=<name> message send ...
+# with <name> from bin/sessionview-from (the one resolver: $SESSIONVIEW_FROM,
+# $SESSIONVIEW_MENU_FROM, config mail_from, config pane_menu_from, $USER,
+# "sessionview"). EMAIL and TM_AGENT_ADDRESS are unset because sessionmail
+# reads them BEFORE CLAUDE_CODE_AGENT, and a tmux server's environment may be
+# an agent's. Everything after ADDRESS goes to `message send` unchanged.
+#
+# `message` is looked up on PATH, then ~/.local/bin/message: a tmux server's
+# PATH may predate the install.
+set -euo pipefail
+
+[ $# -ge 1 ] || { echo "usage: sessionview-send ADDRESS [message-send args...]" >&2; exit 1; }
+
+here="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+from="$("$here/sessionview-from")"
+
+message_bin="$(command -v message || true)"
+[ -n "$message_bin" ] || message_bin="$HOME/.local/bin/message"
+if [ ! -x "$message_bin" ]; then
+  echo "sessionview-send: no 'message' command (install sessionmail)" >&2
+  exit 127
+fi
+
+exec env -u EMAIL -u TM_AGENT_ADDRESS CLAUDE_CODE_AGENT="$from" "$message_bin" send "$@"

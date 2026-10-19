@@ -1,0 +1,106 @@
+#!/bin/bash
+# sessionview-messages — the `messages` tab: a project's mail, read-only, in NeoMutt.
+#
+#   sessionview-messages PROJECT [--store SLUG] [--print]
+#
+# A project session comes up with a messages tab by default; the tab is
+# named `messages` in both store and project sessions. Three facts, each
+# measured:
+#   the folder   `message path [SLUG/]PROJECT` (sessionmail 2454f6f) prints
+#                the project's maildir, e.g. ~/.mail/agents/acme/myproject;
+#                exit 2 when there is none.
+#   the viewer   `neomutt -R -F RC -f FOLDER`. -R (read-only) is not optional:
+#                without it, reading a message moves it new/ -> cur/ and the
+#                pager never pages it (measured with NeoMutt 20260616). The
+#                one writer of read-state stays `message mark`.
+#   the rc       SessionView's own, written here per folder: the four folder
+#                lines (mbox_type=Maildir, folder, spoolfile=+, mark_old=no),
+#                then `source config/neomuttrc` (the view: threaded, oldest
+#                first),
+#                then ~/.sessionkit/view/settings/neomuttrc if you have one,
+#                so yours wins.
+#                -F means ~/.muttrc is NOT read - nothing of yours can write
+#                the box.
+# SIDEBAR: boxes down the side, so a project's asks are seen first in its
+# messages: the box itself, then this project's asks as notmuch virtual
+# mailboxes. The
+# rows and their queries are written here, per project; the look (width,
+# format, keys) is config/neomuttrc. Three rows:
+#   PROJECT         the box, every message, threaded - the tab as it was
+#   Asks            one line per ask: Type:ask and (to:PROJECT+ask or
+#                   Project:PROJECT). `to:` matches Cc too, and every ask
+#                   carries its project's +ask box in To or Cc (measured:
+#                   24 of 24 in one day's asks).
+#   Asks · threads  the same asks with every reply under them (type=threads):
+#                   an answer, or a reply carrying the task id, shows as a
+#                   child - this is where "is it being worked on" is read.
+# The rows need notmuch on PATH, FOLDER under its database.path, and the Type
+# and Project headers indexed (notmuch config set index.header.Type Type;
+# ... index.header.Project Project; notmuch reindex '*'). Without the index
+# the rows are every mail to PROJECT+ask, replies too, and the rc says so;
+# without notmuch, or a folder notmuch does not hold, the tab is the one
+# folder as before and the sidebar is hidden. --print names the reason.
+# Ctrl-o (sidebar-open) is the macOS tty's `discard` char and never reaches
+# neomutt; `stty discard undef` runs below, in the shell that owns the tty
+# (measured by the first user of this layout: a backtick inside
+# the rc does NOT work - its subshell's stdin is not reliably the terminal).
+# Every window is a shell with the tool typed in (sessionview-session's rule),
+# so quitting neomutt leaves a prompt in the project's directory.
+set -u
+SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+# THE home settings dir, the one definition in shell (Python's is
+# SETTINGS_DIR in bin/sessionview-config): your neomuttrc lives here, beside
+# view.json.
+VIEW_SETTINGS="$HOME/.sessionkit/view/settings"
+usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+NAME=""; SLUG=""; PRINT=0
+while [ $# -gt 0 ]; do case "$1" in
+  -h|--help) usage;;
+  --store) SLUG="$2"; shift;;
+  --print) PRINT=1;;
+  -*) echo "sessionview-messages: unknown flag $1" >&2; usage 2;;
+  *) NAME="$1";;
+esac; shift; done
+[ -n "$NAME" ] || { echo "sessionview-messages: PROJECT required" >&2; usage 2; }
+command -v message >/dev/null 2>&1 || { echo "sessionview-messages: no \`message\` on PATH - sessionmail is not installed (github.com/sessionkit/sessionmail)" >&2; exit 2; }
+command -v neomutt >/dev/null 2>&1 || { echo "sessionview-messages: no neomutt on PATH - brew install neomutt" >&2; exit 2; }
+BOX="$NAME"; [ -n "$SLUG" ] && BOX="$SLUG/$NAME"
+FOLDER="$(message path "$BOX" 2>&1)" || { echo "sessionview-messages: $FOLDER" >&2; exit 2; }
+[ -d "$FOLDER" ] || { echo "sessionview-messages: $BOX: $FOLDER is not a directory" >&2; exit 2; }
+# The sidebar's rows: per project, so written here, not in config/neomuttrc.
+SIDEBAR=""; SIDEBAR_WHY=""
+if command -v notmuch >/dev/null 2>&1; then
+  DB="$(notmuch config get database.path 2>/dev/null)"
+  if [ -z "$DB" ]; then SIDEBAR_WHY="notmuch has no database.path"
+  else case "$FOLDER/" in
+    "$DB"/*)
+      if [ "$(notmuch config get index.header.Type 2>/dev/null)" = Type ] &&
+         [ "$(notmuch config get index.header.Project 2>/dev/null)" = Project ]; then
+        Q="Type:ask and (to:\\\"$NAME+ask\\\" or Project:\\\"$NAME\\\")"
+      else
+        Q="to:\\\"$NAME+ask\\\""
+        SIDEBAR_WHY="notmuch does not index Type and Project, so Asks is every mail to $NAME+ask, replies too - notmuch config set index.header.Type Type; notmuch config set index.header.Project Project; notmuch reindex '*'"
+      fi
+      SIDEBAR="$(printf 'set nm_default_url="notmuch://%s"\nset nm_query_type=messages\nset virtual_spoolfile=no\nnamed-mailboxes "%s" "%s"\nvirtual-mailboxes "Asks" "notmuch://?query=%s"\nvirtual-mailboxes "Asks · threads" "notmuch://?type=threads&query=%s"\n' "$DB" "$NAME" "$FOLDER" "$Q" "$Q")";;
+    *) SIDEBAR_WHY="$FOLDER is not under notmuch database.path $DB";;
+  esac; fi
+else SIDEBAR_WHY="no notmuch on PATH (brew install notmuch)"; fi
+SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; STATE="$SESSIONVIEW_STATE/mutt"; mkdir -p "$STATE"
+RC="$STATE/${BOX//\//-}.rc"
+{
+  printf 'set mbox_type=Maildir\nset folder="%s"\nset spoolfile=+\nset mark_old=no\n' "$FOLDER"
+  [ -n "$SIDEBAR_WHY" ] && printf '# sidebar: %s\n' "$SIDEBAR_WHY"
+  [ -n "$SIDEBAR" ] && printf '%s\n' "$SIDEBAR"
+  printf 'source "%s"\n' "$SESSIONVIEW_ROOT/config/neomuttrc"
+  [ -z "$SIDEBAR" ] && printf 'set sidebar_visible=no\n'
+  [ -f "$VIEW_SETTINGS/neomuttrc" ] && printf 'source "%s"\n' "$VIEW_SETTINGS/neomuttrc"
+} >"$RC"
+if [ "$PRINT" = 1 ]; then
+  echo "box=$BOX folder=$FOLDER rc=$RC"
+  if [ -n "$SIDEBAR" ]; then echo "sidebar=$NAME, Asks, Asks · threads${SIDEBAR_WHY:+ ($SIDEBAR_WHY)}"
+  else echo "sidebar=none: $SIDEBAR_WHY"; fi
+  cat "$RC"
+  echo "neomutt -R -F $RC -f $FOLDER"; exit 0
+fi
+[ -t 0 ] && stty discard undef 2>/dev/null
+exec neomutt -R -F "$RC" -f "$FOLDER"

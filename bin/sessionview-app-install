@@ -1,0 +1,75 @@
+#!/bin/sh
+# sessionview-app-install - build the macOS Dock app from macos/ and install it.
+#
+#   sessionview-app-install            build + install to ~/Applications
+#   sessionview-app-install --check    say what it would do, change nothing
+#   DEST=/Applications sessionview-app-install
+#
+# Why this exists: the Dock app once existed ONLY as a compiled bundle in
+# one person's ~/Applications. Nobody could read it, diff it or install it,
+# and a path bug in it went unseen for a day.
+# The source is now macos/SessionView.applescript and this rebuilds it.
+#
+# The app is a FRONT DOOR, not the product: it opens a terminal and runs
+# `sessionview` in it. `sessionview` in any shell does the same job.
+set -u
+ROOT="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
+SRC="$ROOT/macos/SessionView.applescript"
+ICON="$ROOT/macos/dreamcatcher.icns"
+DEST="${DEST:-$HOME/Applications}"
+APP="$DEST/SessionView.app"
+CHECK=""; [ "${1:-}" = "--check" ] && CHECK=1
+
+[ "$(uname -s)" = "Darwin" ] || { echo "sessionview-app-install: macOS only (this is $(uname -s))" >&2; exit 1; }
+[ -f "$SRC" ] || { echo "sessionview-app-install: missing $SRC" >&2; exit 1; }
+command -v osacompile >/dev/null 2>&1 || { echo "sessionview-app-install: osacompile not found (install Xcode command line tools)" >&2; exit 1; }
+
+if [ -n "$CHECK" ]; then
+  echo "source: $SRC"
+  echo "icon:   $ICON"
+  echo "would install: $APP"
+  [ -e "$APP" ] && echo "note: $APP exists and would be REPLACED"
+  exit 0
+fi
+
+TMP="$(mktemp -d)" || exit 1
+trap 'rm -rf "$TMP"' EXIT
+osacompile -o "$TMP/SessionView.app" "$SRC" || exit 1
+
+# custom icon: the compiled applet ships AppleScript's own
+if [ -f "$ICON" ]; then
+  cp "$ICON" "$TMP/SessionView.app/Contents/Resources/dreamcatcher.icns" || exit 1
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile dreamcatcher" \
+    "$TMP/SessionView.app/Contents/Info.plist" >/dev/null 2>&1 \
+    || /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string dreamcatcher" \
+       "$TMP/SessionView.app/Contents/Info.plist" >/dev/null
+  # the compiled applet also names an icon inside Assets.car; that key wins
+  # over CFBundleIconFile on recent macOS, so it goes.
+  /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" \
+    "$TMP/SessionView.app/Contents/Info.plist" >/dev/null 2>&1 || :
+fi
+for kv in "CFBundleName Dreamcatcher" "CFBundleDisplayName Dreamcatcher" "CFBundleIdentifier Dreamcatcher"; do
+  k=${kv%% *}; v=${kv#* }
+  /usr/libexec/PlistBuddy -c "Set :$k $v" "$TMP/SessionView.app/Contents/Info.plist" >/dev/null 2>&1 \
+    || /usr/libexec/PlistBuddy -c "Add :$k string $v" "$TMP/SessionView.app/Contents/Info.plist" >/dev/null
+done
+# ad-hoc signature: unsigned bundles that CHANGE in place get killed by
+# Gatekeeper's cached hashes ("damaged"). Re-signing after every edit is the fix.
+codesign -f -s - "$TMP/SessionView.app" >/dev/null 2>&1 || \
+  echo "sessionview-app-install: warning - could not sign the bundle" >&2
+
+mkdir -p "$DEST" || exit 1
+rm -rf "$APP" || exit 1
+mv "$TMP/SessionView.app" "$APP" || exit 1
+touch "$APP"            # nudge Finder to re-read the icon
+echo "sessionview: installed $APP"
+echo "drag it to your Dock; one click opens sessionview in your preferred terminal"
+# The ad-hoc signature is a fresh identity every build, and macOS keys TCC
+# permissions to it -- so a rebuild silently revokes the Accessibility tick
+# that `fullscreen` needs on Terminal.app. Say so, every time, rather than
+# letting it look like the feature broke.
+if [ "$(command -v sessionview-config >/dev/null 2>&1 && sessionview-config get fullscreen 2>/dev/null)" = "true" ]; then
+  echo
+  echo "note: fullscreen is on, and this REBUILD resets its Accessibility permission."
+  echo "      System Settings > Privacy & Security > Accessibility > turn SessionView back on."
+fi

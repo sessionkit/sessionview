@@ -1,0 +1,19 @@
+#!/bin/sh
+# tmux-show [-L SOCK] TARGET [--client TTY] - show the human a window.
+# TARGET = session or session:window. select-window on that session; with
+# --client, switch that client (its tty, from `tmux list-clients`) to it.
+# Moves ONLY the client you name. Measured on a sessionview frame:
+# select-window then switch-client -c /dev/ttysNNN.
+set -eu
+L=""; if [ "${1:-}" = "-L" ]; then L="-L $2"; shift 2; fi
+T="${1:?target}"; C=""
+[ "${2:-}" = "--client" ] && C="${3:?tty}"
+case "$T" in *:*) ;; *) T="$T:";; esac
+# shellcheck disable=SC2086
+tmux $L select-window -t "=$T" 2>/dev/null || tmux $L select-window -t "$T"
+if [ -n "$C" ]; then
+  # shellcheck disable=SC2086
+  tmux $L switch-client -c "$C" -t "=${T%%:*}"
+fi
+# shellcheck disable=SC2086
+tmux $L list-windows -t "=${T%%:*}" -F 'now: #{session_name}:#{window_name} #{?window_active,*,}' | grep '\*$' | sed 's/ \*$//'

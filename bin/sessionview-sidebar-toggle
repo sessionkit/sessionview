@@ -1,0 +1,71 @@
+#!/bin/sh
+# sessionview-sidebar-toggle - hide the sidebar, or show it again.
+#
+#   sessionview-sidebar-toggle                  from INSIDE the inner tmux (the
+#                                               tab-bar glyph, a key, a shell):
+#                                               finds the frame by the client's tty
+#   sessionview-sidebar-toggle --frame SOCK:SESSION   name the frame (tests, the sidebar)
+#   sessionview-sidebar-toggle --tty /dev/ttysNNN    the clicking client (the tab-bar glyph)
+#   sessionview-sidebar-toggle --hide | --show  one direction only (default: toggle)
+#
+# On a small laptop screen the sidebar needs a way to hide and show again, a
+# little glyph. That is table stakes, not icing: a sidebar that cannot get out
+# of the way of a wide diff is not a sidebar.
+#
+# HOW: the sidebar stays RUNNING. Hide = `break-pane -d` moves its pane into a
+# window of the frame nobody looks at (named sidebar-hidden); the client pane
+# fills the frame. Show = `join-pane -h -b -l WIDTH` puts it back on the left
+# at the width it had. Nothing is killed, nothing restarts, the sidebar's own
+# state (selection, filters, the pinned tty) survives the round trip. The
+# width is stashed in the frame's environment so a show restores it exactly.
+#
+# The frame is found by the CLIENT: the inner tmux client that ran this has a
+# tty; the outer (frame) server has exactly one pane on that tty - the client
+# pane - and its session is the frame. No env var needed inside the inner
+# session, and the right frame is found when several are open.
+set -eu
+FSOCK="${SESSIONVIEW_FRAME_SOCK:-sessionview-frame}"
+FRAME=""; MODE="toggle"; TTY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --frame) FRAME="$2"; shift 2;;
+    --tty)   TTY="$2"; shift 2;;          # the clicking client's tty, from the tab-bar binding
+    --hide)  MODE="hide"; shift;;
+    --show)  MODE="show"; shift;;
+    *) echo "sessionview-sidebar-toggle: unknown argument '$1'" >&2; exit 2;;
+  esac
+done
+if [ -n "$FRAME" ]; then
+  FSOCK="${FRAME%%:*}"; F="${FRAME#*:}"
+else
+  tty="${TTY:-$(tmux display-message -p '#{client_tty}' 2>/dev/null || true)}"
+  [ -n "$tty" ] || { echo "sessionview-sidebar-toggle: not inside tmux and no --frame" >&2; exit 1; }
+  F="$(tmux -L "$FSOCK" list-panes -a -F '#{pane_tty} #{session_name}' 2>/dev/null | awk -v t="$tty" '$1 == t {print $2; exit}')"
+  [ -n "$F" ] || { echo "sessionview-sidebar-toggle: no frame shows this client ($tty) on server $FSOCK" >&2; exit 1; }
+fi
+o() { tmux -L "$FSOCK" "$@"; }
+
+hidden="$(o list-windows -t "=$F" -F '#{window_name} #{pane_id}' 2>/dev/null | awk '$1 == "sidebar-hidden" {print $2; exit}')"
+if [ -n "$hidden" ] && [ "$MODE" != "hide" ]; then
+  # SHOW: back on the left of the client pane, at the stashed width
+  client="$(o list-panes -t "=$F:0" -F '#{pane_id}' | head -1)"
+  width="$(o show-environment -t "=$F" SIDEBAR_HIDDEN_WIDTH 2>/dev/null | sed 's/^[^=]*=//')"
+  case "$width" in ''|*[!0-9]*) width="$("$(dirname "$0")/sessionview-config" get width 2>/dev/null || echo 34)";; esac
+  o join-pane -h -b -l "$width" -s "$hidden" -t "$client"
+  o select-pane -t "$client"                       # the keyboard stays in the terminal
+  echo "sidebar shown ($width columns)"
+  exit 0
+fi
+if [ -z "$hidden" ] && [ "$MODE" != "show" ]; then
+  # HIDE: the sidebar is pane 0.0 by construction (sessionview-frame); take the
+  # LEFTMOST pane of window 0 to be safe, and stash its width for the show.
+  side="$(o list-panes -t "=$F:0" -F '#{pane_left} #{pane_id} #{pane_width}' | sort -n | head -1)"
+  n="$(o list-panes -t "=$F:0" | wc -l | tr -d ' ')"
+  [ "$n" -ge 2 ] || { echo "sessionview-sidebar-toggle: one pane in the frame, nothing to hide" >&2; exit 1; }
+  pane="$(printf '%s' "$side" | awk '{print $2}')"; width="$(printf '%s' "$side" | awk '{print $3}')"
+  o set-environment -t "=$F" SIDEBAR_HIDDEN_WIDTH "$width"
+  o break-pane -d -s "$pane" -n sidebar-hidden
+  echo "sidebar hidden (was $width columns)"
+  exit 0
+fi
+echo "sidebar already ${MODE}n" | sed 's/hiden/hidden/'

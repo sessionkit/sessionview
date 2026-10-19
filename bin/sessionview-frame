@@ -1,0 +1,174 @@
+#!/bin/sh
+# sessionview-frame — the sessionview window WITHOUT a Ghostty split: a private outer tmux
+# server ("frame") holds one window, sidebar pane on the left and the tmux
+# client for your project on the right. Runs in ANY terminal: it needs no
+# cmd+d at start, and a user without Ghostty gets the same sidebar as one
+# with it.
+#
+#   sessionview-frame [SESSION] [--sock SOCKET] [--width N]
+#
+# SESSION   what the right pane attaches (default: main)
+# --sock    the tmux server SESSION lives on (default: default; a store's is
+#           tm-store-NAME)
+# --width   sidebar columns (default: config width via sessionview-config, else 34)
+#
+# The outer server is invisible: status off, prefix None, mouse on, so every
+# key and click falls through - the sidebar pane sees its clicks, the right
+# pane's inner tmux sees the rest. One outer session per frame (frame-<pid>),
+# killed when this terminal detaches. The right pane's tty is written to
+# SESSIONVIEW_PIN so the sidebar moves THIS client and no other (64ec0ff). When the
+# right pane dies (its session ended) the sidebar recreates it on the next
+# click (SESSIONVIEW_FRAME).
+set -u
+SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
+FRAME_SOCK="${SESSIONVIEW_FRAME_SOCK:-sessionview-frame}"
+SESSION="main"; SOCK="default"; WIDTH=""; GIVEN=""
+while [ $# -gt 0 ]; do case "$1" in
+  -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+  --sock) SOCK="$2"; shift;;
+  --width) WIDTH="$2"; shift;;
+  -*) echo "sessionview-frame: unknown flag $1" >&2; exit 2;;
+  *) SESSION="$1"; GIVEN=1;;
+esac; shift; done
+# Already inside a tmux client? Attaching a frame here nests a client in a
+# pane: a terminal that auto-attaches tmux at login would run sessionview
+# inside itself, a loop of frames in frames. Better to deal with it, for
+# example by detaching the tmux client it is in. Two cases, both measured:
+#  - inside a FRAME already (this client's tty is a pane of the frame
+#    server): refuse - a frame in a frame is that loop;
+#  - inside a plain tmux: hand this terminal over - `detach-client -E`
+#    detaches the client and runs us on its tty in its place (man tmux:
+#    "run shell-command to replace the client"). The session the user was
+#    in stays alive and becomes the frame's right pane unless SESSION was
+#    given; its server becomes --sock. (-E was measured to do this.)
+if [ -n "${TMUX:-}" ]; then
+  ctty="$(tmux display -p '#{client_tty}' 2>/dev/null)"
+  if tmux -L "$FRAME_SOCK" list-panes -a -F '#{pane_tty}' 2>/dev/null | grep -qx "$ctty"; then
+    echo "sessionview: already inside a sessionview frame (client $ctty) - the sidebar is on the left; a frame in a frame is the loop" >&2
+    exit 1
+  fi
+  here_sock="$(printf %s "$TMUX" | cut -d, -f1)"; here_sock="${here_sock##*/}"
+  if [ -z "$GIVEN" ]; then
+    SESSION="$(tmux display -p '#{session_name}')"; SOCK="$here_sock"
+  fi
+  q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
+  # -E runs the command with the CLIENT's environment, not this shell's
+  # (measured: SESSIONVIEW_FRAME_SOCK set here did not reach the frame,
+  # which landed on the default frame server) - carry what matters by hand.
+  cmd="SESSIONVIEW_ROOT=$(q "$SESSIONVIEW_ROOT") SESSIONVIEW_STATE=$(q "$SESSIONVIEW_STATE") SESSIONVIEW_PYTHON=$(q "${SESSIONVIEW_PYTHON:-}")"
+  cmd="$cmd SESSIONVIEW_FRAME_SOCK=$(q "$FRAME_SOCK") TMUX="
+  cmd="$cmd exec $(q "$0") $(q "$SESSION") --sock $(q "$SOCK")"
+  [ -n "$WIDTH" ] && cmd="$cmd --width $(q "$WIDTH")"
+  exec tmux detach-client -E "$cmd"
+fi
+if [ -z "$WIDTH" ]; then
+  WIDTH="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get width 2>/dev/null || true)"
+  WIDTH="${WIDTH:-34}"
+fi
+TMUX_BIN="$(command -v tmux)"
+F="frame-$$"
+PIN="$SESSIONVIEW_STATE/frame-$$.tty"
+export SESSIONVIEW_PIN="$PIN" SESSIONVIEW_FRAME="$FRAME_SOCK:$F" SESSIONVIEW_VIEW_SOCK="$SOCK"
+
+o() { "$TMUX_BIN" -L "$FRAME_SOCK" "$@"; }
+cleanup() { trap - HUP INT TERM EXIT; for h in client-attached client-resized client-detached; do o set-hook -gu "$h[$$]" 2>/dev/null; done; o kill-session -t "=$F" 2>/dev/null; rm -f "$PIN"; }
+trap cleanup HUP INT TERM EXIT     # a closed terminal window must not leave the frame behind
+# the inner session must exist before a client can attach to it. FRESH records
+# whether THIS launch minted it: tmux always gives a new session one window
+# running a shell, and when an agent autostarts that shell is the empty
+# window 0 sitting beside it. Only the agent knows whether it wants the
+# window, so the fact is passed on, not acted on here.
+FRESH_WIN=""
+"$TMUX_BIN" -L "$SOCK" has-session -t "=$SESSION" 2>/dev/null || \
+  FRESH_WIN="$("$TMUX_BIN" -L "$SOCK" new-session -d -P -F '#{window_id}' -s "$SESSION" 2>/dev/null)"
+# ... and it gets the sessionview look (tabs on TOP) HERE, at launch, every time:
+# frame.conf is session-scoped and was applied only by sessionview-session (a
+# session it creates) and by the sidebar on a JUMP - the session the frame
+# attaches at launch got neither, so a fresh install saw the global bottom
+# bar (a new user's tmux showed its tabs at the bottom; SPEC.md had promised
+# "applied on attach"). Same invocation as the sidebar's apply_look: every
+# line is a session-scoped set, so sourcing it again is a no-op and the
+# global config is untouched (a normal tmux session keeps its bar at the
+# bottom).
+sh -c 'S="$1"; L="$3"; tmux() { command tmux -L "$L" "$@"; }; . "$2"' sh "$SESSION" "$SESSIONVIEW_ROOT/tmux/frame.conf" "$SOCK"
+# the agent pane menu (right-click an agent's pane: Speak / Continue / ...), IF
+# the user turned it on. Opt-in: one bind-key is global to the server and
+# replaces their own right-click menu. Sourced into the running server, so it
+# works whether or not tmux was already up. Fails open, like the rest of the
+# frame's setup. See tmux/agent-menu.conf.
+if [ "$("$SESSIONVIEW_ROOT/bin/sessionview-config" get pane_menu 2>/dev/null)" = true ]; then
+  "$TMUX_BIN" -L "$SOCK" source-file "$SESSIONVIEW_ROOT/tmux/agent-menu.conf" 2>/dev/null || true
+fi
+# the chosen agent, if the user has one - asked once, remembered, started in
+# its OWN window of the inner session (never the user's shell pane, never a
+# second seat for an agent already running). Fails open: `|| true` is the
+# whole contract, a config question must never cost the user their window.
+# The design is in bin/sessionview-autostart.
+"$SESSIONVIEW_ROOT/bin/sessionview-autostart" "$SOCK" "$SESSION" ${FRESH_WIN:+--fresh-window "$FRESH_WIN"} || true
+# outer: sidebar pane first, then the client pane beside it. BOTH ARE HELD BY
+# PANE ID (%N), never by index. `0.0` is a POSITION, and a position is not a
+# promise: on a live frame here the client sat at index 0 and the sidebar at
+# index 1, so `resize-pane -t '=F:0.0' -x $WIDTH` squeezed the CLIENT to the
+# sidebar's width and handed the rest of the terminal to the sidebar. That is
+# how a plain `sessionview` once showed only the sidebar, whole screen - and it
+# needs a client-attached or client-resized to fire, which
+# is why a frame already up does not show it and a fresh launch always does.
+# A pane id is stable for the life of the pane; nothing renumbers it.
+SIDE="$(o new-session -d -P -F '#{pane_id}' -s "$F" -x "${COLUMNS:-200}" -y "${LINES:-50}" -e "SESSIONVIEW_PIN=$PIN" -e "SESSIONVIEW_PYTHON=${SESSIONVIEW_PYTHON:-}" -e "SESSIONVIEW_FRAME=$SESSIONVIEW_FRAME" -e "SESSIONVIEW_VIEW_SOCK=$SOCK" \
+  "exec \"$SESSIONVIEW_ROOT/bin/sessionview\" sidebar")"
+o set -t "$F" status off
+o set -t "$F" prefix None
+o set -t "$F" focus-events on        # the sidebar closes its menu when a click moves focus to the main pane
+o set -t "$F" mouse on
+o set -t "$F" escape-time 0
+o set -t "$F" focus-events on
+o set -t "$F" allow-passthrough on
+o set -t "$F" detach-on-destroy on
+o set -t "$F" set-titles on
+o set -t "$F" set-titles-string "sessionview: #{pane_title}"
+# the seam between the halves: a FAINT line, one shade up from the sidebar's
+# own BG (#21252e), and it CAN be dragged. The border was once painted
+# invisible and MouseDown1Border/MouseDrag1Border were unbound here, because
+# fit() re-asserted the width and a drag flicked back (the blue/white bar).
+# fit() now adopts a drag as the new width and remembers it (tmux-sidebar
+# e5d3f64), so the binding comes back - and the line has to be visible, or
+# there is nothing to grab. Key tables are
+# server-wide and this server is private to frames, so an earlier frame's
+# unbind is undone here explicitly: bind is idempotent.
+o set -w -t "=$F:0" pane-border-style "fg=#3a3f4d,bg=#21252e"
+o set -w -t "=$F:0" pane-active-border-style "fg=#3a3f4d,bg=#21252e"
+o set -w -t "=$F:0" pane-border-lines single
+o bind-key -T root MouseDown1Border "resize-pane -M"
+o bind-key -T root MouseDrag1Border "resize-pane -M"
+MAIN="$(o split-window -h -P -F '#{pane_id}' -t "$SIDE" -e "TMUX=" \
+  "exec \"$TMUX_BIN\" -L \"$SOCK\" attach -t \"=$SESSION\"")"
+# the frame publishes its own panes, so the sidebar process (which cannot see
+# this shell's variables) addresses them the same way instead of guessing.
+o set -t "$F" @sessionview_side_pane "$SIDE"
+o set -t "$F" @sessionview_main_pane "$MAIN"
+o resize-pane -t "$SIDE" -x "$WIDTH"
+# the sidebar keeps its width whatever the terminal does (the client's real
+# size lands at attach and on every resize; without this a smaller terminal
+# squeezed the sidebar to one column, measured)
+# client hooks are server-scoped: a session-scoped one never fired on resize
+# (measured: 120 -> 90 cols left the sidebar at 19). One array slot per
+# frame (indexed by pid) so frames do not overwrite each other's hook.
+o set-hook -g "client-attached[$$]" "resize-pane -t '$SIDE' -x $WIDTH"
+# a frame dies with its client even when the trap above never runs (the
+# terminal killed, the shell gone: a frame was once found alive with no
+# client). client-detached fires for a LOST client too, and the hook is
+# global, so it must know the client was THIS frame's: measured,
+# #{client_session} in the hook names the CURRENT client
+# (another frame's), #{hook_session} is empty, and #{hook_client} is the
+# lost client's tty - which is this script's own terminal. destroy-unattached
+# was tried and is wrong here: set before attach it kills the detached
+# session on the next server loop.
+TTY="$(tty 2>/dev/null || echo none)"
+o set-hook -g "client-detached[$$]" "if -F '#{==:#{hook_client},$TTY}' 'kill-session -t =$F'"
+o set-hook -g "client-resized[$$]"  "resize-pane -t '$SIDE' -x $WIDTH"
+o select-pane -t "$MAIN"
+# pin = the client pane's tty: that is the client the sidebar may move
+o display-message -p -t "$MAIN" '#{pane_tty}' >"$PIN"
+o attach -t "=$F"
+cleanup

@@ -1,0 +1,9 @@
+{
+  "name": "sessionview",
+  "version": "0.2.0",
+  "description": "A sidebar for tmux: your projects (sessions) and your agents (seats), here and on remote hosts. Skills that let an agent drive tmux, lazygit, neovim and a Claude Code pane safely, simply, and without reading the whole screen.",
+  "author": { "name": "Mike Bailey", "email": "mike@sessionkit.ai" },
+  "homepage": "https://github.com/sessionkit/sessionview",
+  "repository": "https://github.com/sessionkit/sessionview",
+  "metadata": { "dependencies": { "show-me": "referenced, not bundled - install it beside this plugin" } }
+}

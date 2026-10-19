@@ -1,0 +1,67 @@
+#!/bin/sh
+# start-agent - "start an agent on the project" from the project menu (the
+# flow: select a store, add a project, windows open labelled, START AN AGENT
+# on it).
+#
+#   start-agent NAME PATH SOCKET      (argv from the manifest)
+#
+# WHAT RUNS is config, not code: bare `session start` is the default, and a
+# config can override it (to `tm kick`, say). `agent_command` from sessionview-config
+# (template > ~/.sessionkit/view/settings/view.json > store > project .sessionview), an
+# argv list with {project} {agent} {dir} {socket} filled in. The template's:
+#   ["session", "start", "--tmux-target", "{project}", "--no-switch", "{agent}"]
+# An override for taskmaster: ["tm", "kick", "{project}"].
+#
+# The agent name comes from the prompt through SESSIONVIEW_CONTEXT_JSON ("input"),
+# not argv, so an empty answer is an answer and not a missing field: `-` = a
+# plain claude with no agent file. The command runs with TMUX naming the
+# STORE's server (the sidebar's own TMUX is the frame's outer server) and
+# cwd = the project, so a new window lands in the project on that server.
+# SESSIONVIEW_DRY_RUN=1 prints the plan and starts nothing.
+set -eu
+NAME="$1"; DIR="$2"; SOCK="${3:-default}"
+SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/../.." && pwd)}"
+AGENT="$(printf '%s' "${SESSIONVIEW_CONTEXT_JSON:-{\}}" | python3 -c 'import sys,json; print((json.load(sys.stdin).get("input") or "").strip())')"
+[ -n "$AGENT" ] || AGENT="-"
+# A name must be one the LAUNCHER can start - a nickname is not one (a
+# nickname gave "agent NAME not found").
+# Asked of the launcher (`session start --list-agents`), not worked out here:
+# a copy of the agents-dir rule here would be one more to drift (the
+# sidebar's copy went the same way). Say so with the
+# list, before any tmux is touched. No launcher on PATH: let the launch itself
+# refuse, with its own words.
+if [ "$AGENT" != "-" ] && command -v session >/dev/null 2>&1; then
+  have="$(session start --list-agents 2>/dev/null | tr '\n' ' ')"
+  case " $have" in
+    *" $AGENT "*) ;;
+    *) echo "start-agent: no agent '$AGENT' - registered: ${have:-none}; enter = plain claude" >&2; exit 1;;
+  esac
+fi
+cd "$DIR"
+SP="$(tmux -L "$SOCK" display-message -p '#{socket_path}' 2>/dev/null || true)"
+[ -n "$SP" ] || { echo "start-agent: no tmux server '$SOCK' for $NAME" >&2; exit 1; }
+tmux -S "$SP" has-session -t "=$NAME" 2>/dev/null || { echo "start-agent: no session '$NAME' on $SOCK" >&2; exit 1; }
+CMD_JSON="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get agent_command --project "$DIR" --json)"
+DRY=""; [ -n "${SESSIONVIEW_DRY_RUN:-}" ] && DRY="--dry-run"
+# fill the placeholders; each argv element stays ONE element (no word splitting)
+eval "set -- $(printf '%s' "$CMD_JSON" | AGENT="$AGENT" NAME="$NAME" DIR="$DIR" SOCK="$SOCK" DRY="$DRY" python3 -c '
+import sys, json, os, shlex
+argv = json.load(sys.stdin)
+if not isinstance(argv, list) or not argv: sys.exit("start-agent: agent_command is not a list")
+sub = {"{project}": os.environ["NAME"], "{agent}": os.environ["AGENT"], "{dir}": os.environ["DIR"], "{socket}": os.environ["SOCK"]}
+out = []
+for a in argv:
+    for k, v in sub.items(): a = a.replace(k, v)
+    out.append(a)
+# The project is NAMED, not implied by cwd: session start now carries a
+# per-agent `start: directory:` (an agent may wake in its own home dir) and
+# a named --directory outranks it; the ambient cwd is last. A project row
+# must land IN the project, so it names it.
+# Only for a `session start` command - a `tm kick` override
+# has its own rules.
+if out[:2] == ["session", "start"]: out[2:2] = ["--directory", os.environ["DIR"]]
+if os.environ["DRY"] and out[:2] == ["session", "start"]: out.insert(2, os.environ["DRY"])
+print(" ".join(shlex.quote(a) for a in out))
+')"
+[ -n "${SESSIONVIEW_DRY_RUN:-}" ] && [ "$1 $2" != "session start" ] && { echo "start-agent: would run: $*" >&2; exit 0; }
+TMUX="$SP,0,0" exec "$@"

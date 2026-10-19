@@ -1,0 +1,85 @@
+#!/bin/bash
+# sessionview-usermail — the user's OWN mail: find-or-create ONE session for it.
+#
+#   sessionview-usermail [--socket SOCK] [--session NAME] [--print]
+#       prints "SOCK<TAB>NAME" on success; 0 ok, 2 refused, 1 usage
+#
+# The user's own mutt instance needs a place of its own, separate from the
+# projects. The sidebar's `✉ mail` row runs this, then jumps to what it prints.
+#   the server   user_mail_socket (default `default`, where a user's `main`
+#                session usually lives). A server that is not running is REFUSED, never
+#                started: we would start it with our own environment (the
+#                same reason sessionview-session's store mode refuses).
+#   the session  user_mail_session (default `mail`): exactly ONE, whichever
+#                store is viewed, so two mutts never contend for one maildir.
+#                One that exists is left exactly as it is - no window added,
+#                none renamed, nothing re-typed. If you made it, it is yours.
+#   the command  user_mail_command (default `neomutt`), typed AS IS: no -R,
+#                no -F, no rc of ours. It reads YOUR config, read-write -
+#                the opposite of sessionview-messages. When its first
+#                word is `neomutt` and that is not on PATH, `mutt` stands in.
+#                "" = off: no row, and this refuses.
+# Every window is a shell with the tool typed in (sessionview-session's rule),
+# so quitting mutt leaves a prompt in ~.
+set -u
+SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+ME=sessionview-usermail
+usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+SOCK=""; NAME=""; PRINT=0
+while [ $# -gt 0 ]; do case "$1" in
+  -h|--help) usage;;
+  --socket) [ $# -ge 2 ] || { echo "$ME: --socket needs a value" >&2; usage 1; }; SOCK="$2"; shift;;
+  --session) [ $# -ge 2 ] || { echo "$ME: --session needs a value" >&2; usage 1; }; NAME="$2"; shift;;
+  --print) PRINT=1;;
+  *) echo "$ME: unknown argument $1" >&2; usage 1;;
+esac; shift; done
+
+# A key the config cannot answer (an older home file is still layered over the
+# template, so this is rare) takes the shipped default; a key set to "" stays "".
+cfg() {
+  local v
+  if v="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get "$1" 2>/dev/null)"; then printf '%s' "$v"
+  else printf '%s' "$2"; fi
+}
+[ -n "$SOCK" ] || SOCK="$(cfg user_mail_socket default)"
+[ -n "$NAME" ] || NAME="$(cfg user_mail_session mail)"
+CMD="$(cfg user_mail_command neomutt)"
+[ -n "$SOCK" ] || SOCK=default
+[ -n "$NAME" ] || NAME=mail
+
+# The command: only its first word is checked on PATH; the rest is the user's.
+read -r FIRST REST <<<"$CMD"
+if [ -z "${FIRST:-}" ]; then
+  echo "$ME: user_mail_command is empty - the user mail row is off (sessionview-config set user_mail_command neomutt)" >&2
+  exit 2
+fi
+if ! command -v "$FIRST" >/dev/null 2>&1; then
+  if [ "$FIRST" = neomutt ] && command -v mutt >/dev/null 2>&1; then
+    CMD="mutt${REST:+ $REST}"
+  else
+    why="no $FIRST on PATH"; [ "$FIRST" = neomutt ] && why="no neomutt or mutt on PATH - brew install neomutt"
+    echo "$ME: $why" >&2
+    exit 2
+  fi
+fi
+
+if [ "$PRINT" = 1 ]; then
+  printf 'socket=%s session=%s command=%s\n' "$SOCK" "$NAME" "$CMD"
+  echo "would: find session $NAME on tmux -L $SOCK; if absent, new-session -d -s $NAME -n mail -c $HOME and type: $CMD"
+  echo "would refuse (exit 2) if the $SOCK server is not running"
+  exit 0
+fi
+
+T=(tmux -L "$SOCK")
+if ! "${T[@]}" list-sessions >/dev/null 2>&1; then
+  echo "$ME: server down: no tmux server on -L $SOCK (not started: it would carry this tool's environment)" >&2
+  exit 2
+fi
+if ! "${T[@]}" has-session -t "=$NAME" 2>/dev/null; then
+  PANE="$("${T[@]}" new-session -d -s "$NAME" -n mail -c "$HOME" -P -F '#{pane_id}' 2>&1)" || {
+    echo "$ME: new-session $NAME on -L $SOCK: $PANE" >&2; exit 2; }
+  # Our own window, made a moment ago - not an agent pane. Its id, so a
+  # rename or a second `mail` window can never take the keys.
+  "${T[@]}" send-keys -t "$PANE" "$CMD" C-m
+fi
+printf '%s\t%s\n' "$SOCK" "$NAME"

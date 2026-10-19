@@ -1,0 +1,15 @@
+#!/bin/sh
+# nvim-open SOCK FILE [+LINE] - open FILE in the nvim listening on SOCK.
+# (show-me does this and more - a file, a URL, the right pane; prefer it
+# when it is installed. This is the bare move.)
+# LINE goes to `:e +N FILE` (sending "+12" as keys moved down one line and
+# started a count - found in review). The path is a Vim string
+# through fnameescape(), so spaces survive; `<` cannot (remote-send reads
+# it as a key name) and is refused.
+set -eu
+S="${1:?socket}"; F="${2:?file}"; LN="${3:-}"; LN="${LN#+}"
+case "$F" in /*) ;; *) F="$(pwd)/$F";; esac
+case "$F" in *'<'*) echo "nvim-open: '<' in a path is a key to remote-send; rename it" >&2; exit 2;; esac
+FV="$(printf %s "$F" | sed "s/'/''/g")"
+nvim --server "$S" --remote-send "<C-\\><C-n>:exe 'e ${LN:++$LN }' . fnameescape('$FV')<CR>"
+nvim --server "$S" --remote-expr 'expand("%:p") . ":" . line(".")'

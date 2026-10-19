@@ -1,0 +1,11 @@
+#!/bin/bash
+# speak NAME ADDRESS — summon an agent to voice: mail it "speak EOM".
+# A row with a pane used to get `session send NAME -v` (typing "v" into its
+# pane); session send is disabled (it typed into an agent's pane by
+# accident), so every row is mailed, through sessionmail's `message send`
+# (`session mail send` was retired). message send has no --from, so it goes through
+# bin/sessionview-send, which sends AS the human at the keyboard.
+set -u
+addr="$2"
+here="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+exec "$here/../../bin/sessionview-send" "$addr" -s "speak EOM" --no-body </dev/null

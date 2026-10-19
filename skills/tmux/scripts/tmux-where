@@ -1,0 +1,16 @@
+#!/bin/sh
+# tmux-where [-L SOCK] - the map: server, session, window, pane, command.
+# Without -L: every server under $TMUX_TMPDIR/tmux-UID. Cheap; run it first.
+set -eu
+if [ "${1:-}" = "-L" ]; then
+  tmux -L "$2" list-panes -a -F "$2 #{session_name}:#{window_index}.#{pane_index} #{pane_id} #{window_name} #{pane_current_command} #{?pane_active,*, }" 2>/dev/null
+  exit 0
+fi
+d="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"   # tmux's own default; /tmp -> /private/tmp on a Mac
+for s in "$d"/*; do
+  [ -S "$s" ] || continue
+  n="$(basename "$s")"
+  # a dead socket (server gone, file left) is normal; under set -e it ended
+  # the whole map at the first one (measured: one dead socket, empty map)
+  tmux -S "$s" list-panes -a -F "$n #{session_name}:#{window_index}.#{pane_index} #{pane_id} #{window_name} #{pane_current_command} #{?pane_active,*, }" 2>/dev/null || true
+done

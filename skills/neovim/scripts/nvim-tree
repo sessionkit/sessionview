@@ -1,0 +1,15 @@
+#!/bin/sh
+# nvim-tree SOCK status|show|hide|toggle - Neo-tree (LazyVim's file tree,
+# Space-e) through the nvim server socket, without keystrokes. status
+# prints "shown" or "hidden" (exit 0/1) by asking nvim whether any window
+# holds a neo-tree buffer.
+set -eu
+S="${1:?socket}"; A="${2:-status}"
+shown() { nvim --server "$S" --remote-expr 'len(filter(range(1, winnr("$")), {_, w -> getwinvar(w, "&filetype") ==# "neo-tree"}))'; }
+case "$A" in
+  status) n="$(shown)"; [ "$n" -gt 0 ] && { echo shown; exit 0; } || { echo hidden; exit 1; };;
+  show)   [ "$(shown)" -gt 0 ] || nvim --server "$S" --remote-send '<C-\><C-n>:Neotree show<CR>'; echo shown;;
+  hide)   [ "$(shown)" -eq 0 ] || nvim --server "$S" --remote-send '<C-\><C-n>:Neotree close<CR>'; echo hidden;;
+  toggle) nvim --server "$S" --remote-send '<C-\><C-n>:Neotree toggle<CR>'; sleep 0.3; "$0" "$S" status;;
+  *) echo "nvim-tree SOCK status|show|hide|toggle" >&2; exit 1;;
+esac

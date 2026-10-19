@@ -1,0 +1,53 @@
+#!/bin/sh
+# lazygit-goto [-L SOCK] PANE PANEL TEXT - focus panel N (2 files, 3 branches,
+# 4 commits, 5 stash) and put the cursor on the first row containing TEXT,
+# using lazygit's OWN filter/search: "/" TEXT Enter Esc. Four keys, no
+# walking, never "g" (which is RESET in commits and POP in stash). Moves
+# only; never Enter on a row, never Space, never a letter command outside
+# the prompt. Exit 2 when the pane is not showing lazygit or the panel is
+# not a list; exit 3 when nothing matches (the filter is cleared either way).
+#
+# Measured with lazygit 0.64.1, default theme, on a
+# private tmux server: branches and commits land on the row and KEEP it after
+# Esc (FilteredListViewModel.ClearFilter restores the unfiltered index;
+# commits use view search and the cursor stays). FILES (panel 2) is a tree:
+# the filter selects the top DIRECTORY node first, so this walks j (bounded)
+# to the file - and after Esc the tree is rebuilt and the cursor is NOT on
+# the file any more. For panel 2 act while the filter is up (pass --keep) or
+# accept that Esc loses the row.
+set -eu
+L=""; KEEP=0
+while :; do case "${1:-}" in
+  -L) L="-L $2"; shift 2;;
+  --keep) KEEP=1; shift;;     # leave the filter up so the caller can act on the row (the files tree loses it on Esc)
+  *) break;;
+esac; done
+P="${1:?pane}"; N="${2:?panel 2-5}"; T="${3:?text}"
+D="$(dirname "$0")"
+case "$N" in 2|3|4|5) ;; *) echo "lazygit-goto: panel $N is not a list; only 2-5 take a filter" >&2; exit 2;; esac
+# refuse before the first key: a dialog, a menu or a non-lazygit pane would eat TEXT as commands
+# shellcheck disable=SC2086
+"$D/lazygit-state" $L "$P" >/dev/null 2>&1 || { echo "lazygit-goto: $P is not showing lazygit's list view; not typing" >&2; exit 2; }
+# shellcheck disable=SC2086
+tmux $L send-keys -t "$P" "$N"; sleep 0.2
+# shellcheck disable=SC2086
+tmux $L send-keys -t "$P" /; sleep 0.2
+# shellcheck disable=SC2086
+tmux $L send-keys -t "$P" -l "$T"; sleep 0.3
+# shellcheck disable=SC2086
+tmux $L send-keys -t "$P" Enter; sleep 0.3
+# while filtering the border is cyan, not green, so state says "panel: ?"; the row is what matters.
+# a tree (files) selects the directory node first: walk j, bounded by depth, until the row matches
+i=0; row=""
+while [ $i -lt 8 ]; do
+  # shellcheck disable=SC2086
+  row="$("$D/lazygit-state" $L "$P" 2>/dev/null | sed -n 's/^row: //p')"
+  case "$row" in *"$T"*) break;; esac
+  [ "$N" = 2 ] || break
+  # shellcheck disable=SC2086
+  tmux $L send-keys -t "$P" j; sleep 0.15; i=$((i+1))
+done
+# shellcheck disable=SC2086
+[ "$KEEP" = 1 ] || { tmux $L send-keys -t "$P" Escape; sleep 0.2; }   # clear the filter; lists keep the cursor, the files tree does not
+case "$row" in *"$T"*) echo "at: $row"; exit 0;; esac
+echo "lazygit-goto: '$T' not found in panel $N" >&2; exit 3
