@@ -16,8 +16,10 @@ socket is exact: `nvim --server SOCK --remote-send / --remote-expr`.
 ## Tools (`scripts/`)
 
 - `nvim-sock [-L SOCK] PANE` — the socket of the nvim in that pane
-  (sessionview's convention `$TMPDIR/nvim-show-pane-<pane_id>`, else the
-  `--listen` on its command line). Exit 2 when there is none.
+  (sessionview's convention, shared with show-me:
+  `$TMPDIR/nvim-show-<server key>-pane-<pane number>`, the key being the
+  cksum of the tmux server's socket path; else the `--listen` on its
+  command line). Exit 2 when there is none.
 - `nvim-open SOCK FILE [+LINE]` — open a file; prints the buffer path
   back. `show-me FILE` does this and more when it is installed - prefer it.
 - `nvim-tree SOCK status|show|hide|toggle` — Neo-tree. `status` prints

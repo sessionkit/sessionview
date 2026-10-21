@@ -1,7 +1,9 @@
 #!/bin/sh
 # nvim-sock [-L SOCK] PANE - the listen socket of the nvim in a tmux pane.
-# sessionview-session starts nvim with --listen $TMPDIR/nvim-show-pane-<pane_id>
-# (show-me's convention); any nvim started by hand can be found through
+# sessionview-session starts nvim with
+# --listen <socket dir>/nvim-show-<server key>-pane-<pane number> (show-me's
+# convention: the key is the cksum of the tmux server's socket path, since
+# pane ids count per server); any nvim started by hand can be found through
 # its command line (--listen PATH) or $NVIM_LISTEN_ADDRESS. Prints the path.
 set -eu
 L=""; if [ "${1:-}" = "-L" ]; then L="-L $2"; shift 2; fi
@@ -10,7 +12,12 @@ P="${1:?pane}"
 ID="$(tmux $L display -p -t "$P" '#{pane_id}')"
 # shellcheck disable=SC2086
 PID="$(tmux $L display -p -t "$P" '#{pane_pid}')"
-S="${TMPDIR:-/tmp}/nvim-show-pane-$ID"
+# shellcheck disable=SC2086
+KEY="$(tmux $L display -p -t "$P" '#{socket_path}' | tr -d '\n' | cksum | awk '{print $1}')"
+if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then D="${TMPDIR%/}"
+elif [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ]; then D="${XDG_RUNTIME_DIR%/}"
+else D="$HOME/.local/run"; fi
+S="$D/nvim-show-$KEY-pane-${ID#%}"
 [ -S "$S" ] && { echo "$S"; exit 0; }
 # a hand-started nvim: read --listen off the process tree under the pane
 for pid in $(pgrep -P "$PID" 2>/dev/null) "$PID"; do

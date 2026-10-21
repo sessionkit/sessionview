@@ -38,7 +38,7 @@
 #   shell    the root - the fallback when nothing else applies; pin it
 #            (auto: true) and every session gets one
 # {editor} is VISUAL, else EDITOR, else nvim; when it is nvim it LISTENS on the
-# socket show-me looks for (<socket dir>/nvim-show-pane-<pane id>).
+# socket show-me looks for (<socket dir>/nvim-show-<server key>-pane-<pane number>).
 # Every window is a SHELL with the tool typed into it, so quitting nvim or
 # lazygit leaves a prompt in the right directory. An entry's `when` is a NAME
 # this script tests (always | has_repo | has_projdir | has_mail | fallback) and
@@ -207,6 +207,10 @@ show_socket_dir() {   # show-me's get_socket_dir(), verbatim in spirit
   elif [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ]; then echo "${XDG_RUNTIME_DIR%/}"
   else mkdir -p "$HOME/.local/run" && chmod 700 "$HOME/.local/run"; echo "$HOME/.local/run"; fi
 }
+show_server_key() {   # show-me's show_server_key(): the cksum of a tmux server's socket path.
+  # Pane ids count per SERVER, so a socket named by pane id alone collides across servers.
+  printf '%s' "$1" | cksum | awk '{print $1}'
+}
 say "session=$NAME socket=$SOCK store=$STORE root=$ROOT repo=${REPO:-NONE} projdir=${PROJDIR:-NONE} store_id=${STOREID:-$([ "$STOREMISS" = 1 ] && echo UNREGISTERED || echo NONE)} profile=$([ "$PLAIN" = 1 ] && echo off || echo on)$([ -n "$STOREVIEW" ] && echo " store_view=$STOREVIEW store_project=${STOREPROJ:-NONE} fresh=$FRESH")"
 
 # -- cascading config: built-in > host > store > project, all JSON (JSON
@@ -288,19 +292,21 @@ dir_of() {  # dir_of CWD -> the path, or "" when that dir is unknown for this pr
   esac
 }
 editor_for() {  # editor_for WINDOW -> what {editor} becomes there. nvim LISTENS on the socket
-  # show-me looks for (<socket dir>/nvim-show-pane-<pane id>): a code window opened
-  # with neovim has the socket running, so show-me can reach it;
+  # show-me looks for (<socket dir>/nvim-show-<server key>-pane-<pane number>): a code
+  # window opened with neovim has the socket running, so show-me can reach it;
   # any other editor is typed as it is. No window yet (--list-windows): the bare name.
-  local pid
+  local pid key pane
   case "$(basename "${ED%% *}")" in
     nvim) [ -n "$1" ] || { printf '%s' "$ED"; return; }
-          if [ "$PRINT" = 1 ]; then pid='<pane>'; else pid="$(tmux display-message -p -t "=$NAME:$1" '#{pane_id}')"; fi
+          if [ "$PRINT" = 1 ]; then pid='<pane>'; key='<server>'
+          else pane="$(tmux display-message -p -t "=$NAME:$1" '#{pane_id} #{socket_path}')"
+               pid="${pane%% *}"; key="$(show_server_key "${pane#* }")"; fi
           # and ROOTS at the window's cwd: LazyVim's <leader>e opens neo-tree at LazyVim.root(),
           # which walks up to .git - in the project window that is the STORE, not the project
           # (the project directory should be the root). -c, not --cmd: LazyVim's own
           # options.lua overwrites vim.g.root_spec at load.
           # Only nvims this script opens get it; the user's config is untouched.
-          printf '%s --listen %s -c %s' "$ED" "$(printf %q "$(show_socket_dir)/nvim-show-pane-${pid#%}")" "$(printf %q 'lua vim.g.root_spec={"cwd"}')";;
+          printf '%s --listen %s -c %s' "$ED" "$(printf %q "$(show_socket_dir)/nvim-show-$key-pane-${pid#%}")" "$(printf %q 'lua vim.g.root_spec={"cwd"}')";;
     *) printf '%s' "$ED";;
   esac
 }

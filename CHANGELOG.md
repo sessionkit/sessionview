@@ -86,6 +86,10 @@ All notable changes to sessionview are documented here. The format is
   Apple's 3.9. It finds a Python 3.11+, or says what to install.
 - The Dock app finds `sessionview` through the user's own login shell, so
   it works on a stock Mac (zsh), not only under bash.
+- A project's code window opens Neovim on a second tmux server too. Its
+  socket name now carries the server as well as the pane, as show-me's
+  does, so two servers' same-numbered panes no longer collide ("address
+  already in use"). The neovim skill's `nvim-sock` finds it by that name.
 
 - Mail sent from the sidebar, the plugin actions, voicemode speak and the agent
   pane menu was sent as a fixed name. It is now sent as you: `$SESSIONVIEW_FROM`,
