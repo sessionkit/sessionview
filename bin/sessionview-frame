@@ -31,6 +31,13 @@ while [ $# -gt 0 ]; do case "$1" in
   -*) echo "sessionview-frame: unknown flag $1" >&2; exit 2;;
   *) SESSION="$1"; GIVEN=1;;
 esac; shift; done
+# The frame takes over the terminal it runs in, so it needs one: a script or
+# an agent's shell (stdin/stdout not a tty) is refused and nothing is touched.
+# Every refusal is one line on stderr, exit 2.
+refuse() { echo "sessionview: refused: $1" >&2; exit 2; }
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  refuse "not a terminal: run it from a terminal (stdin and stdout must be a tty)"
+fi
 # Already inside a tmux client? Attaching a frame here nests a client in a
 # pane: a terminal that auto-attaches tmux at login would run sessionview
 # inside itself, a loop of frames in frames. Better to deal with it, for
@@ -42,15 +49,21 @@ esac; shift; done
 #    "run shell-command to replace the client"). The session the user was
 #    in stays alive and becomes the frame's right pane unless SESSION was
 #    given; its server becomes --sock. (-E was measured to do this.)
+# "This client" is the CALLER's own, and only that: lib/client.sh proves it
+# (this tty is $TMUX_PANE's, and exactly one client shows its session) or
+# refuses. An untargeted `display -p '#{client_tty}'` once answered with
+# another terminal's client on the same server, and the detach replaced it.
 if [ -n "${TMUX:-}" ]; then
-  ctty="$(tmux display -p '#{client_tty}' 2>/dev/null)"
+  . "$SESSIONVIEW_ROOT/lib/client.sh"
+  sv_own_client || refuse "$SV_REFUSAL"
+  ctty="$SV_CLIENT"
   if tmux -L "$FRAME_SOCK" list-panes -a -F '#{pane_tty}' 2>/dev/null | grep -qx "$ctty"; then
     echo "sessionview: already inside a sessionview frame (client $ctty) - the sidebar is on the left; a frame in a frame is the loop" >&2
     exit 1
   fi
-  here_sock="$(printf %s "$TMUX" | cut -d, -f1)"; here_sock="${here_sock##*/}"
+  here_path="${TMUX%%,*}"; here_sock="${here_path##*/}"
   if [ -z "$GIVEN" ]; then
-    SESSION="$(tmux display -p '#{session_name}')"; SOCK="$here_sock"
+    SESSION="$SV_SESSION"; SOCK="$here_sock"
   fi
   q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
   # -E runs the command with the CLIENT's environment, not this shell's
@@ -60,7 +73,7 @@ if [ -n "${TMUX:-}" ]; then
   cmd="$cmd SESSIONVIEW_FRAME_SOCK=$(q "$FRAME_SOCK") TMUX="
   cmd="$cmd exec $(q "$0") $(q "$SESSION") --sock $(q "$SOCK")"
   [ -n "$WIDTH" ] && cmd="$cmd --width $(q "$WIDTH")"
-  exec tmux detach-client -E "$cmd"
+  exec tmux -S "$here_path" detach-client -t "$ctty" -E "$cmd"
 fi
 if [ -z "$WIDTH" ]; then
   WIDTH="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get width 2>/dev/null || true)"

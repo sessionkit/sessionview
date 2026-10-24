@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 DATA = Path(__file__).resolve().parent / "_data"
 PUBLIC = ("sessionview", "sessionview-config", "sessionview-session", "sessionview-messages")

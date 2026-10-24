@@ -16,9 +16,11 @@ logs every call and hands it to the real tmux.
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import time
 import unittest
 
 from tests import support
@@ -33,15 +35,24 @@ class Render(unittest.TestCase):
         if not support.have_tmux():
             self.skipTest(support.TMUX_SKIP)
         real_tmux = shutil.which("tmux")
+        # Cleanups run LIFO, after tearDown (SV-164). Each one is registered
+        # right after the thing it undoes, so the walkstore kill-server runs
+        # FIRST, while its socket dir still exists. The private_tmux exit
+        # rmtrees that shared dir; a kill-server after it cannot reach the
+        # socket and leaves the daemonised server orphaned.
         self._scratch = support.scratch_env()
         env, self.home = self._scratch.__enter__()
+        self.addCleanup(self._scratch.__exit__, None, None, None)
         self._pt = support.private_tmux("walk")
         self.pt = self._pt.__enter__()
+        self.addCleanup(self._pt.__exit__, None, None, None)
         self.store = support.PrivateTmux("walkstore", self.pt.tmpdir)  # a second server, same dir
         self.addCleanup(self.store.tmux, "kill-server")
         for t, n in ((self.pt, "alpha"), (self.store, "beta")):
             r = t.tmux("new-session", "-d", "-s", n, "-n", f"{n}-win")
             self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.store.tmux("list-sessions", "-F", "#{pid}")
+        self.store_pid = int(r.stdout.split()[0])   # read by Teardown, below
         sockdir = os.path.join(self.pt.tmpdir, f"tmux-{os.getuid()}")
         for i in range(DEAD):       # bound, never listened on, closed: a refused connect
             s = socket.socket(socket.AF_UNIX)
@@ -74,10 +85,6 @@ class Render(unittest.TestCase):
         with open(self.env["SESSIONVIEW_CONFIG"], "w") as f:
             json.dump({"agent_format": " {glyph} {agent}"}, f)
 
-    def tearDown(self):
-        self._pt.__exit__(None, None, None)
-        self._scratch.__exit__(None, None, None)
-
     def calls(self):
         r = subprocess.run([sys.executable, "-B", SIDEBAR, "--once"], env=self.env,
                            capture_output=True, text=True, timeout=60, cwd=support.REPO)
@@ -94,6 +101,43 @@ class Render(unittest.TestCase):
     def test_a_seats_server_is_asked_once_a_render(self):
         store = [c for c in self.calls() if c[:2] == ["-L", self.store.sock]]
         self.assertEqual([c[2] for c in store], ["list-panes"], store)
+
+
+def server_argv(pid):
+    """The command line of live process PID, or None once it is gone."""
+    r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
+                       capture_output=True, text=True, timeout=30)
+    return r.stdout.strip() or None
+
+
+class Teardown(unittest.TestCase):
+    """SV-164: a Render test stops its walkstore server, not just the walk one.
+
+    The walkstore server lived in the walk server's scratch TMUX_TMPDIR, and
+    its kill-server ran as a cleanup after tearDown had rmtree'd that dir: the
+    kill missed, silently, and every test orphaned one daemonised server.
+    This runs one Render test and asks after the EXACT server it started: its
+    pid, read in setUp, still carrying `-L sv-test-walkstore-<this pid>`.
+    Never a pattern: other gates' servers are none of this test's business.
+    """
+
+    def test_walkstore_server_is_gone_after_the_test(self):
+        support.require_tmux()
+        case = Render("test_dead_socket_files_are_never_asked")
+        result = unittest.TestResult()
+        case.run(result)
+        self.assertEqual(result.errors + result.failures, [], "the Render test itself failed")
+        self.assertEqual(result.skipped, [])
+        pid, name = case.store_pid, case.store.sock
+        mine = lambda: (server_argv(pid) or "").split()[:3] == ["tmux", "-L", name]
+        for _ in range(50):     # kill-server returns before the server has exited
+            if not mine():
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, signal.SIGTERM)    # this run's own server, by exact pid
+            self.fail(f"walkstore server {pid} (-L {name}) outlived its test")
+        self.assertFalse(os.path.exists(case.pt.tmpdir), "the scratch TMUX_TMPDIR was left")
 
 
 if __name__ == "__main__":

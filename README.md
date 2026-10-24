@@ -41,7 +41,7 @@ neomutt and notmuch's index on your machine.
   sidebar's mail, the agent pane menu, and the session, taskmaster and
   voicemode plugins (each lists `message` in its `requires`). Mail is
   sent as you: `$USER`, unless `sessionview-config set mail_from NAME`
-  (or `$SESSIONVIEW_FROM`) names your mail name; `sessionview-from`
+  (or `$SESSIONVIEW_FROM`) names your mail name; `sessionview from`
   prints the name in effect.
 - **neomutt** for the `messages` tab (`bin/sessionview-messages` runs
   `neomutt -R`; the tab exits 2 without it): `brew install neomutt`, built
@@ -270,9 +270,14 @@ and every key in
   error with its traceback). Follow it with
   `tail -f ~/.local/state/sessionview/sessionview.log` when a click
   seems to do nothing.
-- `~/.local/state/sessionview/sidebar-mouse.log`: one line per mouse
-  click the sidebar receives.
-- Both sit under `$SESSIONVIEW_STATE` when it is set. Neither is rotated.
+- **Levels:** `log_level` in your settings (or `$SESSIONVIEW_LOG_LEVEL`
+  for one run). `error`, the default, logs only what went wrong.
+  `timing` adds a line per click or key with its milliseconds, and each
+  command that took 50 ms or more, so a slow click names its slow part.
+  `debug` adds every command and every mouse event (what the old
+  `sidebar-mouse.log` held).
+- It sits under `$SESSIONVIEW_STATE` when that is set. It is not rotated:
+  turn `timing` or `debug` on while you look, then back to `error`.
 - **Health:** `sessionview install --check`: exit 0 and `ready` when
   every requirement is present, exit 1 with each MISSING one named
   otherwise. It checks the machine, not a running sidebar.

@@ -140,6 +140,10 @@ labels.
   tmux call (a new tab that never appeared), a `--window` that refused,
   an uncaught exception, each a line with time, socket, where, what.
   `tail -f` it when something silently does nothing.
+- `log_level` - what that ONE file records: `error` (the default), `timing`
+  (a line per click or key with its ms, and each command of 50 ms or more)
+  or `debug` (every command, every mouse event). `$SESSIONVIEW_LOG_LEVEL`
+  overrides it for one run.
 - `window_pins` - your pins over that list, `{"name": true|false}`,
   written by ^p / right-click in the new-tab picker. A delta, so the list
   keeps flowing to you.

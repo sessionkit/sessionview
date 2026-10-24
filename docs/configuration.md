@@ -45,6 +45,8 @@ One cascade of JSON objects. A later layer wins.
   0.1.0](#upgrading-from-010).
 - **`SIDEBAR_WIDTH` and `SIDEBAR_REFRESH`**, when set, win over the
   `width` and `refresh` keys in the sidebar.
+- **`SESSIONVIEW_LOG_LEVEL`**, when set, wins over the `log_level` key
+  for that run: `error`, `timing` or `debug`.
 
 Every key, its type, its default and what it does: the [settings
 page][settings].
@@ -62,7 +64,7 @@ these that is not empty wins:
 5. `$USER`
 6. the word `sessionview`
 
-`<checkout>/bin/sessionview-from` prints the name in effect. Set yours with
+`sessionview from` prints the name in effect. Set yours with
 `sessionview-config set mail_from <you>`.
 
 ## The messages tab

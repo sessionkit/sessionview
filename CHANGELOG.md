@@ -8,6 +8,41 @@ All notable changes to sessionview are documented here. The format is
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-24
+
+### Added
+
+- Release mechanics: `make release` (`BUMP=patch|minor|major` or
+  `VERSION=X.Y.Z`) runs `scripts/release.py`. It sets the version in
+  `pyproject.toml` with uv, copies it into the plugin manifest and
+  `__version__`, stamps this changelog, commits and makes an annotated tag.
+  It never pushes. It refuses a dirty tree, a missing `[Unreleased]` or an
+  existing tag. `make build`, `make push` and `make publish` (the PyPI token
+  never goes on a command line) complete the set. A test fails when any
+  copy of the version differs from `pyproject.toml`.
+- Log levels: `log_level` (`error`, `timing`, `debug`), or `$SESSIONVIEW_LOG_LEVEL` for one run. `timing` writes a line per click or key with its milliseconds, and each command of 50 ms or more, so a slow click names its slow part. `debug` adds every command and mouse event; `sidebar-mouse.log` is no longer written.
+
+### Fixed
+
+- A project's code window opens Neovim on a second tmux server too. Its
+  socket name now carries the server as well as the pane, as show-me's
+  does, so two servers' same-numbered panes no longer collide ("address
+  already in use"). The neovim skill's `nvim-sock` finds it by that name.
+- `sessionview from` and `sessionview sidebar-toggle` work from a package
+  install; the docs named `sessionview-from`, which only a checkout puts on PATH.
+- Inside tmux, `sessionview` takes over only your own terminal or refuses (exit 2),
+  an unknown word prints usage instead of opening a frame, and a sidebar click
+  outside a frame or popup, with no pinned client, no longer moves another
+  client (SV-192).
+- A first open no longer remembers a sidebar width you never chose. The
+  frame's own layout steps, before your terminal attached, could be taken
+  for a drag of the border and saved, so a new user's sidebar opened at 100
+  columns from then on. Only a drag made while a terminal is attached is
+  remembered now. If your sidebar opens too wide, drag it back once, or run
+  `sessionview config unset width`.
+
+## [0.2.0] - 2026-10-20
+
 ### Added
 
 - Install as a package: `uv tool install sessionview`. The wheel carries
@@ -86,10 +121,6 @@ All notable changes to sessionview are documented here. The format is
   Apple's 3.9. It finds a Python 3.11+, or says what to install.
 - The Dock app finds `sessionview` through the user's own login shell, so
   it works on a stock Mac (zsh), not only under bash.
-- A project's code window opens Neovim on a second tmux server too. Its
-  socket name now carries the server as well as the pane, as show-me's
-  does, so two servers' same-numbered panes no longer collide ("address
-  already in use"). The neovim skill's `nvim-sock` finds it by that name.
 
 - Mail sent from the sidebar, the plugin actions, voicemode speak and the agent
   pane menu was sent as a fixed name. It is now sent as you: `$SESSIONVIEW_FROM`,

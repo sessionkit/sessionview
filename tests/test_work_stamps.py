@@ -53,18 +53,21 @@ def scan_archive(data):
 class WorkHourStamps(unittest.TestCase):
     def test_regex_window(self):
         # Built at run time so no stamp is spelled in this file.
+        # Here and in the planted stamp below, the day name is a STAMP_RE token
+        # (Mon-Fri) that is never checked against the date, and the date is a
+        # synthetic Sunday on purpose. The mismatch is deliberate: do not "fix" it.
         def stamp(hhmm, day="Wed"):
-            return "%s %s 2030-09-18" % (hhmm, day)
+            return "%s %s 2030-06-09" % (hhmm, day)
         self.assertEqual(work_hour_hits("x " + stamp("09:00") + " y"), 1)
         self.assertEqual(work_hour_hits(stamp("16:59")), 1)
         self.assertEqual(work_hour_hits(stamp("08:59")), 0)
         self.assertEqual(work_hour_hits(stamp("17:00")), 0)
         self.assertEqual(work_hour_hits(stamp("13:37", "Sat")), 0)
         self.assertEqual(work_hour_hits(stamp("13:00-14:00")), 1)
-        self.assertEqual(work_hour_hits("Wed 2030-09-18"), 0)
+        self.assertEqual(work_hour_hits("Wed 2030-06-09"), 0)
 
     def test_scan_flags_a_planted_stamp(self):
-        planted = ("%s Wed 2030-09-18 planted\n" % "13:37").encode()
+        planted = ("%s Wed 2030-06-09 planted\n" % "13:37").encode()
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
             for name in ("docs/planted.md", "config/planted.md", "bin/tmux-sidebar"):

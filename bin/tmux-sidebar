@@ -162,15 +162,33 @@ _migrate_state()
 os.makedirs(SESSIONVIEW_STATE, exist_ok=True)
 def state(name): return os.path.join(SESSIONVIEW_STATE, name)
 
-def log_err(where, text):
-    """ONE log for everything that goes wrong: ~/.local/state/sessionview/sessionview.log,
-    every error in a single log. A
-    line a person can read: time, socket, where, what. Never raises."""
+LOG_LEVELS = ("error", "timing", "debug")
+LOG_LEVEL = "error"     # set from `log_level` once the config is read (below CFG)
+
+def log_at(level):
+    """True when LEVEL's lines are written. Each level holds the ones before
+    it: errors always, timing at timing or debug, debug at debug only."""
+    return LOG_LEVELS.index(level) <= LOG_LEVELS.index(LOG_LEVEL)
+
+def log(level, where, text):
+    """ONE log for everything: ~/.local/state/sessionview/sessionview.log.
+    A line a person can read: time, socket, where, what. An error line is
+    exactly as it always was; a timing or debug line names its level after
+    the socket (`sock=X timing run: ...`), so the errors stay easy to grep.
+    Written only when `log_level` lets LEVEL through. Never raises."""
+    if not log_at(level):
+        return
+    tag = "" if level == "error" else level + " "
+    sock = globals().get("SOCK", "-")   # a line written before SOCK is known still lands
     try:
         with open(state("sessionview.log"), "a") as lg:
-            lg.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} sock={SOCK} {where}: {text}\n")
+            lg.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} sock={sock} {tag}{where}: {text}\n")
     except Exception:
         pass
+
+def log_err(where, text):
+    """An error line in the one log: written at every level."""
+    log("error", where, text)
 
 def run_checked(cmd, where):
     """subprocess.run that LOGS a non-zero exit with its stderr instead of
@@ -249,6 +267,40 @@ def load_config():
         cfg["refresh"] = float(os.environ["SIDEBAR_REFRESH"])
     return cfg
 CFG = load_config()
+
+def log_level():
+    """`log_level` from the config, $SESSIONVIEW_LOG_LEVEL over it (for one
+    run). error (the default) logs only what went wrong; timing adds a line
+    per click or key with its milliseconds, and each command that took
+    TIMING_MIN_MS or more; debug adds every command and every mouse event.
+    An unknown word is error, and the log says so once."""
+    raw = os.environ.get("SESSIONVIEW_LOG_LEVEL") or CFG.get("log_level") or "error"
+    v = str(raw).strip().lower()
+    if v in LOG_LEVELS:
+        return v
+    log_err("log_level", f"unknown level {raw!r}: using error (one of {', '.join(LOG_LEVELS)})")
+    return "error"
+LOG_LEVEL = log_level()
+
+TIMING_MIN_MS = 50      # timing: a command this slow or slower gets its line
+_RUN = subprocess.run
+def _timed_run(*args, **kw):
+    """subprocess.run, timed: the command and its milliseconds go to the log
+    (timing when it took TIMING_MIN_MS or more, else debug). Installed only
+    when the level is timing or debug, so at error it costs nothing. Every
+    tm, tmux, git and sessionview-session call goes through here, the
+    worker threads' too: the slow one in a slow click is named."""
+    t0 = time.monotonic()
+    try:
+        return _RUN(*args, **kw)
+    finally:
+        ms = (time.monotonic() - t0) * 1000
+        cmd = args[0] if args else kw.get("args", "")
+        if isinstance(cmd, (list, tuple)):
+            cmd = " ".join(str(c) for c in cmd)
+        log("timing" if ms >= TIMING_MIN_MS else "debug", "run", f"{ms:.0f}ms {cmd}"[:300])
+if LOG_LEVEL != "error":
+    subprocess.run = _timed_run
 def wants_context(fmt):
     """A format that shows context, or the model (the scan is where the model
     id comes from), pays the transcript read; nothing else does."""
@@ -2204,8 +2256,8 @@ def client_where():
     only, while the pin sat on a store's server attached to demo
     (measured), so the sessionview client was never found and a click on any
     other store's session was refused as view-only, when a click on a
-    tmux session should simply work. Falls back to the most recently
-    active client on the plain socket. Cached 5s; a move clears it."""
+    tmux session should simply work. No pin found = no client (never the
+    most recently active one: another terminal). Cached 5s; a move clears it."""
     now = time.time()
     if _CLIENT.get("t") and now - _CLIENT["t"] < 5:
         return _CLIENT["v"]
@@ -2217,8 +2269,12 @@ def client_where():
         # one of the user's other terminals: a click on
         # demo switched a different window, focusing it in
         # another terminal.
-        me = sh(["tmux", "display-message", "-p", "#{client_tty}"]).strip()
-        v = (attached_socket(), me)
+        # And even INSIDE the popup an untargeted display is not its client:
+        # measured, it answered with the MORE RECENTLY ACTIVE client, not
+        # the one showing the popup. A popup has no pane ($TMUX_PANE is
+        # empty), so its client is the ONE client on $TMUX's session; none
+        # or two = no client known, and a click moves nothing.
+        v = (attached_socket(), popup_client())
     else:
         pin = os.environ.get("SESSIONVIEW_PIN") or state("frame.tty")   # sessionview-frame: its own pin
         tty_ = open(pin).read().strip() if os.path.exists(pin) else ""
@@ -2231,10 +2287,10 @@ def client_where():
                 break
         if found:
             v = (found, tty_)
-        else:
-            out = sh(["tmux", "-L", "default", "list-clients", "-F", "#{client_activity}\t#{client_tty}"])
-            rows = sorted((l.split("\t") for l in out.splitlines() if "\t" in l), reverse=True)
-            v = ("default", rows[0][1] if rows else "")
+        # No pin found: NO client, never "the most recently active client on
+        # the plain socket" - that is whichever terminal was used last,
+        # someone else's, and a click would switch it. With no tty known
+        # move_client moves nothing (a frame recreates its own right pane).
     _CLIENT.update(t=now, v=v)
     return v
 
@@ -2305,6 +2361,18 @@ def frame_attach(frame, sock, session):
         with open(pin, "w") as f:
             f.write(tty_)
     _CLIENT.clear()
+
+def popup_client():
+    """The tty of the client showing this popup: the ONE client attached to
+    $TMUX's session (socket,pid,session-number), or "" when there are none
+    or several - several cannot be told apart from here, and a guess moves
+    another terminal."""
+    parts = os.environ.get("TMUX", "").split(",")
+    if len(parts) < 3 or not parts[0] or not parts[2].isdigit():
+        return ""
+    out = sh(["tmux", "-S", parts[0], "list-clients", "-t", "$" + parts[2], "-F", "#{client_tty}"])
+    ttys = out.split()
+    return ttys[0] if len(ttys) == 1 else ""
 
 def move_client(sock, session):
     """Show SESSION (on server SOCK) in the sessionview client. Same server:
@@ -3106,6 +3174,12 @@ def fit():
                          next open is the width chosen. The sidebar once
                          undid every drag on the next redraw.
 
+    Only while a client is attached to the frame. Before the first attach the
+    pane changes inside the same window too: the frame's own split and its
+    resize to the configured width. Nobody can drag a border in a session
+    with no client, so those are put back, never remembered (a new user's
+    first open once wrote width 100, half the window the frame starts in).
+
     A drag below MIN_DRAG is a slip and is put back, not remembered. With
     `fit: auto` the wish itself moves (see wish()); the pane follows it."""
     global WIDTH
@@ -3119,10 +3193,13 @@ def fit():
         WIDTH = max(8, min(wish(), cols))
         return
     fsock = frame.split(":", 1)[0]
-    win = sh(["tmux", "-L", fsock, "display-message", "-p", "-t", pane,
-              "#{window_width}"]).strip()
+    # one call: the window's width, and whether a client is attached to the frame
+    w = sh(["tmux", "-L", fsock, "display-message", "-p", "-t", pane,
+            "#{window_width} #{session_attached}"]).split()
+    win = w[0] if w else ""
+    attached = len(w) > 1 and w[1] != "0"
     known = _FIT["pane"]
-    dragged = (win and win == _FIT["win"] and known is not None and cols != known)
+    dragged = (attached and win and win == _FIT["win"] and known is not None and cols != known)
     if dragged and cols >= MIN_DRAG:
         CFG["width"] = cols                                    # the drag is the wish
         if str(CFG.get("fit", "fixed")) in ("auto", "narrow", "focus"):
@@ -3154,6 +3231,7 @@ def draw(lines):
     sys.stdout.write("\033[H\033[2J" + "\r\n".join(lines) + "\r")
     sys.stdout.flush()
 
+INPUT = [""]    # what the input being handled was, for its timing line
 def main():
     global GROUPED, MENU, PROMPT, WRITE_TABS, FILTER, ANCHOR
     if "--pick" in sys.argv:                        # the picker alone, in a popup
@@ -3211,6 +3289,9 @@ def main():
             if not r:
                 lines, targets = render(); draw(lines); continue
             buf += os.read(fd, 64).decode(errors="ignore")
+            t_in = time.monotonic()
+            keys_in = MOUSE_RE.sub("", buf).replace("\x1b[O", "").replace("\x1b[I", "")
+            INPUT[0] = f"key {keys_in!r}" if keys_in else ""
             if "\x1b[O" in buf:                    # focus LEFT the sidebar: a click in the main section
                 buf = buf.replace("\x1b[O", "")
                 FOCUS["in"] = False
@@ -3249,12 +3330,11 @@ def main():
                                    int(m.group(3)), m.group(4))
                 if kind != "M":
                     continue
-                try:   # evidence for "my click opened the menu": what button arrived
-                    with open(state("sidebar-mouse.log"), "a") as lg:
-                        lg.write(f"{time.strftime('%H:%M:%S')} btn={btn} x={x} y={y} target={targets.get(y - 1)}\n"[:200])
-                except OSError:
-                    pass
+                # evidence for "my click opened the menu": what button arrived
+                log("debug", "mouse", f"btn={btn} x={x} y={y} target={targets.get(y - 1)}"[:200])
                 t = targets.get(y - 1)
+                if t:
+                    INPUT[0] = (f"click{'' if btn == 0 else f' btn={btn}'} {t[0]} {t[1]}")[:120]
                 ANCHOR = y - 1                    # a menu this click opens sits beside this row
                 if MENU is not None and not (t and t[0] in ("menu-item", "menu-close")):
                     # A click OUTSIDE an open menu closes it and is consumed -
@@ -3338,6 +3418,8 @@ def main():
                         project_menu(current_session())
             ANCHOR = None                         # a keyboard open has no row: centred
             lines, targets = render(); draw(lines)
+            if INPUT[0]:      # a click or a key: how long until you saw the answer
+                log("timing", "input", f"{(time.monotonic() - t_in) * 1000:.0f}ms {INPUT[0]}")
             buf = buf[buf.rfind("\x1b"):] if buf.count("\x1b") and not MOUSE_RE.search(buf[buf.rfind("\x1b"):]) else ""
     finally:
         tab_clear()                                 # no tab-bar glyph outlives us

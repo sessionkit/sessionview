@@ -42,9 +42,20 @@ with no Python dependencies.
     make install   # install the commands
     make app       # the macOS Dock app
     make scan      # pre-publish leak check (needs SESSIONKIT_SCAN)
+    make build     # wheel + sdist into dist/ (needs uv)
+    make release   # BUMP=patch|minor|major or VERSION=X.Y.Z: bump, commit, tag
+    make push      # push the branch and the tags (release never pushes)
+    make publish   # upload this version to PyPI; the token never on a command line
 
 Stock macOS puts Python 3.9 first on PATH. `make test` finds a newer
 one; to choose, `make test PYTHON=/path/to/python3`.
+
+The version lives in `pyproject.toml` only. `scripts/release.py` (run by
+`make release`) sets it with `uv version` and copies it into
+`.claude-plugin/plugin.json` and `src/sessionview/__init__.py`. Never edit
+a copy by hand: `tests/test_release.py` fails when they differ. Add
+`--dry-run` (`uv run python scripts/release.py patch --dry-run`) to see the
+plan without changing anything.
 
 ## Rules
 

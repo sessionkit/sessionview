@@ -5,13 +5,15 @@
 #        sessionview COMMAND [ARGS]
 #
 #   sessionview [SESSION]  the frame: sidebar on the left, SESSION attached on
-#                    the right (default main). --sock names its tmux server;
-#                    --width, columns.
+#                    the right (default main; a named SESSION must exist).
+#                    --sock names its tmux server; --width, columns.
 #   sessionview config     settings: no verb opens the screen (get/set/list ...)
 #   sessionview session NAME    open a project session with its standard tabs
 #   sessionview messages PROJECT   a project's mail, read-only, in NeoMutt
 #   sessionview install    check requirements (--app: the macOS Dock app)
 #   sessionview autostart --status   which agent starts when sessionview opens
+#   sessionview from       the name your mail is sent as (mail_from, else $USER)
+#   sessionview sidebar-toggle   hide the sidebar, or show it again
 #   sessionview sidebar    the sidebar under its supervisor (the frame's left
 #                    pane runs this). In it: q reloads, Q quits.
 #
@@ -25,9 +27,11 @@
 # without the comment marks, so the help reads cleanly.
 SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
 SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
+# The header above is the usage: -h prints it, and so does an unknown word.
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in
-  -h|--help|help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
-  config|session|messages|install|autostart|terminal|usermail)
+  -h|--help|help) usage; exit 0;;
+  config|session|messages|install|autostart|terminal|usermail|from|sidebar-toggle)
     sub="$1"; shift; exec "$SESSIONVIEW_ROOT/bin/sessionview-$sub" "$@";;
   sidebar)
     # The supervisor: q = exit 0 = reload (picks up an edited tmux-sidebar or
@@ -44,4 +48,28 @@ case "${1:-}" in
     done
     exit 0;;
 esac
+# Anything else is the frame. A word that names no subcommand opens a frame
+# ONLY on a session that already exists on the server the frame will use
+# (--sock, else this tmux's own server when run inside one, else default):
+# a typo or a probe word must not mean "open a frame on a new session named
+# after it". Read-only check; on a miss, usage and exit 2, nothing touched.
+# A new named session is `sessionview session NAME`. No word = main, as before.
+word=""; sock=""; prev=""
+for a in "$@"; do
+  case "$prev" in --sock) sock="$a"; prev=""; continue;; --width) prev=""; continue;; esac
+  case "$a" in --sock|--width) prev="$a";; -*) ;; *) word="$a";; esac
+done
+if [ -n "$word" ]; then
+  extra=""
+  if [ -z "$sock" ]; then
+    if [ -n "${TMUX:-}" ]; then sock="$(printf %s "${TMUX%%,*}")"; sock="${sock##*/}"; extra=1; else sock=default; fi
+  fi
+  if ! tmux -L "$sock" has-session -t "=$word" 2>/dev/null; then
+    echo "sessionview: no command or session named '$word' (on tmux server $sock); a new session is: sessionview session $word" >&2
+    usage >&2
+    exit 2
+  fi
+  # the frame looks where this checked: inside tmux, the caller's own server
+  [ -n "$extra" ] && set -- "$@" --sock "$sock"
+fi
 exec "$SESSIONVIEW_ROOT/bin/sessionview-frame" "$@"

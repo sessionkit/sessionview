@@ -35,6 +35,7 @@ Each table below gives a key's type, its default and what it does.
 | `width_min` | integer | `20` | The narrowest `fit: auto` goes. |
 | `width_max` | integer | `60` | The widest `fit: auto` goes. |
 | `refresh` | integer | `2` | Seconds between redraws. |
+| `log_level` | string | `"error"` | What the one log records: `error`, `timing` (each click and slow command, in ms) or `debug` (every command and mouse event). |
 | `brand` | string | `"sessionview.dev"` | The dim word on the top row. `""` hides it. |
 | `popup_bg` | string | `"#181924"` | The tab bar and menu background colour. |
 | `selected_fg` | string | `"#f0f3ff"` | The selected row's text colour. |

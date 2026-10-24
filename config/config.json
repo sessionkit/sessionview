@@ -9,6 +9,8 @@
   "width_min": 20,
   "width_max": 60,
   "refresh": 2,
+  "_log_level": "What goes in the ONE log, ~/.local/state/sessionview/sessionview.log. error: only what went wrong. timing: also a line per click or key with its milliseconds (from the input arriving to the redraw), and each command that took 50 ms or more. debug: also every command and every mouse event (the old sidebar-mouse.log). $SESSIONVIEW_LOG_LEVEL overrides it for one run. The log is not rotated: leave timing or debug on only while you look.",
+  "log_level": "error",
   "project_two_line": false,
   "project_expand_selected": false,
   "project_gap": 0,

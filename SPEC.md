@@ -25,7 +25,16 @@ are borrowed from herdr, a different tool.
   right = a tmux client attached to SESSION (default `main`) on its own
   server (`--sock`). The seam between them is a faint line; dragging it
   sets the sidebar's width, which is kept (`width`, and `fit` back to
-  `fixed`). The frame dies with its terminal.
+  `fixed`). The frame dies with its terminal. A named SESSION must already
+  exist on that server (else usage, exit 2; `sessionview session NAME`
+  makes one). The frame needs a terminal (stdin and stdout a tty). Run
+  inside tmux it takes over the caller's OWN client (`detach-client -E`)
+  and no other: the caller's tty must be its pane's, and exactly one client
+  must be on a session holding that pane's window (a session group or a
+  linked window counts every such session; `lib/client.sh`); otherwise it
+  refuses, exit 2, and touches nothing. The popup and
+  `sessionview-sidebar-toggle` resolve "this client" by the same rule,
+  never by "most recently active".
 - **The sidebar** — one process, the view below, refreshed every
   `refresh` seconds (default 2). Also runs as a tmux popup (`prefix H` →
   `display-popup -E ... --popup`): the same view, and a jump closes it.
@@ -88,7 +97,9 @@ defaults, not fixed. Rules:
 - Width is a wish, put back on the pane every render: `fit: fixed` (the
   default) is `width` columns; `fit: auto` fits the widest row, clamped
   to `width_min` and `width_max`. A drag on the seam becomes the new
-  `width`.
+  `width`. Only a drag counts: before a client is attached the pane is
+  changed by the frame itself (its split, its resize), and that is never
+  remembered.
 - esc backs out of any view.
 
 ## 3. Actions

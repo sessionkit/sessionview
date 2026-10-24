@@ -1,12 +1,16 @@
 #!/bin/sh
 # sessionview-sidebar-toggle - hide the sidebar, or show it again.
 #
-#   sessionview-sidebar-toggle                  from INSIDE the inner tmux (the
-#                                               tab-bar glyph, a key, a shell):
+#   sessionview sidebar-toggle                  from a shell INSIDE the inner tmux:
 #                                               finds the frame by the client's tty
-#   sessionview-sidebar-toggle --frame SOCK:SESSION   name the frame (tests, the sidebar)
-#   sessionview-sidebar-toggle --tty /dev/ttysNNN    the clicking client (the tab-bar glyph)
-#   sessionview-sidebar-toggle --hide | --show  one direction only (default: toggle)
+#   sessionview sidebar-toggle --hide | --show  one direction only (default: toggle)
+#   sessionview sidebar-toggle --frame SOCK:SESSION   name the frame (tests, the sidebar)
+#   sessionview sidebar-toggle --tty /dev/ttysNNN    the clicking client (the tab-bar glyph)
+#
+# The tab-bar glyph and the tmux bindings run this file by path
+# ($SESSIONVIEW_ROOT/bin/sessionview-sidebar-toggle); from a shell, the
+# `sessionview` front door runs it, so it works from a package install too.
+# -h prints the usage above.
 #
 # On a small laptop screen the sidebar needs a way to hide and show again, a
 # little glyph. That is table stakes, not icing: a sidebar that cannot get out
@@ -32,14 +36,23 @@ while [ $# -gt 0 ]; do
     --tty)   TTY="$2"; shift 2;;          # the clicking client's tty, from the tab-bar binding
     --hide)  MODE="hide"; shift;;
     --show)  MODE="show"; shift;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) echo "sessionview-sidebar-toggle: unknown argument '$1'" >&2; exit 2;;
   esac
 done
 if [ -n "$FRAME" ]; then
   FSOCK="${FRAME%%:*}"; F="${FRAME#*:}"
 else
-  tty="${TTY:-$(tmux display-message -p '#{client_tty}' 2>/dev/null || true)}"
-  [ -n "$tty" ] || { echo "sessionview-sidebar-toggle: not inside tmux and no --frame" >&2; exit 1; }
+  tty="$TTY"
+  if [ -z "$tty" ]; then
+    # no --tty: the CALLER's own client, proven (lib/client.sh) or refused. An
+    # untargeted `display -p '#{client_tty}'` answers with another terminal's
+    # client when this session has none, or has two - and toggled THAT frame.
+    SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+    . "$SESSIONVIEW_ROOT/lib/client.sh"
+    sv_own_client || { echo "sessionview-sidebar-toggle: refused: $SV_REFUSAL" >&2; exit 2; }
+    tty="$SV_CLIENT"
+  fi
   F="$(tmux -L "$FSOCK" list-panes -a -F '#{pane_tty} #{session_name}' 2>/dev/null | awk -v t="$tty" '$1 == t {print $2; exit}')"
   [ -n "$F" ] || { echo "sessionview-sidebar-toggle: no frame shows this client ($tty) on server $FSOCK" >&2; exit 1; }
 fi
