@@ -2,7 +2,8 @@
 # sessionview - a sidebar for tmux, in this terminal. Needs tmux, nothing else.
 #
 # usage: sessionview [SESSION] [--sock SERVER] [--width N]
-#        sessionview COMMAND [ARGS]
+#        sessionview COMMAND [ARGS]   (COMMAND --help: that command's usage)
+#        sessionview --help | --version
 #
 #   sessionview [SESSION]  the frame: sidebar on the left, SESSION attached on
 #                    the right (default main; a named SESSION must exist).
@@ -12,6 +13,8 @@
 #   sessionview messages PROJECT   a project's mail, read-only, in NeoMutt
 #   sessionview install    check requirements (--app: the macOS Dock app)
 #   sessionview autostart --status   which agent starts when sessionview opens
+#   sessionview terminal   the terminal sessionview opens in (--why: how chosen)
+#   sessionview usermail   your own mail: find-or-create its one session
 #   sessionview from       the name your mail is sent as (mail_from, else $USER)
 #   sessionview sidebar-toggle   hide the sidebar, or show it again
 #   sessionview sidebar    the sidebar under its supervisor (the frame's left
@@ -20,20 +23,50 @@
 # Also: prefix H in any tmux client opens the sidebar as a popup.
 # Config: ~/.sessionkit/view/settings/view.json over the shipped config/config.json.
 # State: ~/.local/state/sessionview (SESSIONVIEW_STATE=).
-#
+# (end of usage)
 # Ghostty was stripped out so this works in any terminal with only tmux. It
 # started as ghostty-herd; the Ghostty launcher, the split hook and cmd+d
 # went with the frame (1fd29ce) and this rename. -h prints the usage above
 # without the comment marks, so the help reads cleanly.
 SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
-SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
 # The header above is the usage: -h prints it, and so does an unknown word.
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
+# It ends at the marker line, never at a line number, so it can grow.
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+# The version. In a checkout it is pyproject.toml's, the ONE source.
+# The wheel ships no pyproject.toml, so there it is __version__ in the
+# package's __init__.py, the copy scripts/release.py keeps equal to it
+# (tests/test_release.py holds them equal). Read with sed: no Python runs.
+version() {
+  v=""
+  if [ -f "$SESSIONVIEW_ROOT/pyproject.toml" ]; then
+    v="$(sed -n '/^\[project\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p' "$SESSIONVIEW_ROOT/pyproject.toml" | head -n 1)"
+  elif [ -f "$SESSIONVIEW_ROOT/../__init__.py" ]; then
+    v="$(sed -n 's/^__version__ *= *"\([^"]*\)".*/\1/p' "$SESSIONVIEW_ROOT/../__init__.py" | head -n 1)"
+  fi
+  [ -n "$v" ] || { echo "sessionview: no version found under $SESSIONVIEW_ROOT" >&2; return 1; }
+  echo "sessionview $v"
+}
+# Asking never acts, and neither does a flag nobody knows.
+# Help, the version and every routed verb are answered HERE, before
+# lib/state.sh (it makes the state dir, or moves a pre-release one) and
+# lib/python.sh (it runs Python to find one). A verb checks its own argv
+# first, then sets up what it needs itself. The sidebar's -h goes to
+# tmux-sidebar, never into the supervisor loop below, which would read its
+# exit 0 as "reload"; the supervisor takes no other argument.
+# tests/test_verb_help.py reads the verb list from this case.
 case "${1:-}" in
   -h|--help|help) usage; exit 0;;
+  --version) version; exit;;
   config|session|messages|install|autostart|terminal|usermail|from|sidebar-toggle)
-    sub="$1"; shift; exec "$SESSIONVIEW_ROOT/bin/sessionview-$sub" "$@";;
+    export SESSIONVIEW_ROOT; sub="$1"; shift; exec "$SESSIONVIEW_ROOT/bin/sessionview-$sub" "$@";;
   sidebar)
+    case "${2:-}" in -h|--help) export SESSIONVIEW_ROOT; exec "$SESSIONVIEW_ROOT/bin/tmux-sidebar" "$2";; esac
+    if [ $# -gt 1 ]; then
+      echo "sessionview sidebar: unknown argument '$2'" >&2
+      "$SESSIONVIEW_ROOT/bin/tmux-sidebar" --help >&2
+      exit 2
+    fi
+    SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
     # The supervisor: q = exit 0 = reload (picks up an edited tmux-sidebar or
     # sidebar.toml), Q = exit 3 = quit. A CRASH IS NOT A QUIT: any other exit
     # holds the error on screen and waits (one undefined name once took the
@@ -57,7 +90,12 @@ esac
 word=""; sock=""; prev=""
 for a in "$@"; do
   case "$prev" in --sock) sock="$a"; prev=""; continue;; --width) prev=""; continue;; esac
-  case "$a" in --sock|--width) prev="$a";; -*) ;; *) word="$a";; esac
+  case "$a" in
+    --sock|--width) prev="$a";;
+    -h|--help) ;;
+    -*) echo "sessionview: unknown flag '$a'" >&2; usage >&2; exit 2;;
+    *) word="$a";;
+  esac
 done
 if [ -n "$word" ]; then
   extra=""
@@ -72,4 +110,5 @@ if [ -n "$word" ]; then
   # the frame looks where this checked: inside tmux, the caller's own server
   [ -n "$extra" ] && set -- "$@" --sock "$sock"
 fi
+SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
 exec "$SESSIONVIEW_ROOT/bin/sessionview-frame" "$@"

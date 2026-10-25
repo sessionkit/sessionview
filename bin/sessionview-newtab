@@ -2,8 +2,10 @@
 # sessionview-newtab — the [+] in the sessionview tab bar, as in herdr: plus
 # opens a new tab and you type its name, which replaces the number; the box
 # pops up in the middle of the screen the way herdr's does.
-#   sessionview-newtab --popup DIR      run INSIDE tmux display-popup: the new-tab PICKER
+#   sessionview-newtab --popup [DIR]    run INSIDE tmux display-popup: the new-tab PICKER
+#                                       (DIR defaults to the popup's own directory, $PWD)
 #   sessionview-newtab NAME DIR         create the window (empty NAME = unnamed, shows by number)
+# (end of usage)
 #
 # The popup is the sidebar's own type-and-filter
 # (`tmux-sidebar --pick windows SESSION`): the configured windows for this
@@ -30,8 +32,23 @@
 # A popup is not a pane: its TMUX_PANE is never meaningful here and is dropped.
 SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
 unset TMUX_PANE
-if [ "$1" = "--popup" ]; then
-  D="${2:-$HOME}"; N=""
+# -h/--help: the usage above. A first word that starts with - and is not
+# --popup refuses, exit 2, the usage on stderr, before tmux: it once
+# became a tab's name. So does a DIR that starts with -, and a word after
+# DIR. `--` ends the flags, so a typed name, or its DIR, may start with -.
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+refuse() { echo "sessionview-newtab: unknown argument '$1'" >&2; usage >&2; exit 2; }
+NAMED=""
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  --popup) ;;
+  --) shift; NAMED=1;;
+  -*) refuse "$1";;
+esac
+[ -n "$NAMED" ] || case "${2:-}" in -*) refuse "$2";; esac
+[ $# -le 2 ] || refuse "$3"
+if [ -z "$NAMED" ] && [ "${1:-}" = "--popup" ]; then
+  D="${2:-$PWD}"; N=""                 # the popup's -d directory
   SID="${TMUX##*,}"; S=""
   if [ -n "$TMUX" ] && [ "$SID" != "$TMUX" ]; then
     S="$(tmux display-message -p -t "\$$SID:" '#{session_name}' 2>/dev/null || true)"
@@ -52,7 +69,7 @@ if [ "$1" = "--popup" ]; then
       *)     N="$N$c"; printf '%s' "$c" ;;
     esac
   done
-  exec "$0" "$N" "$D"
+  exec "$0" -- "$N" "$D"
 fi
 N="$1"; D="${2:-$HOME}"
 SID="${TMUX##*,}"                        # the popup's own session id, from tmux itself

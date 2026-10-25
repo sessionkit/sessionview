@@ -19,6 +19,13 @@
 # "✳ super.taskmaster+8206b273", "✳ helper:.helper:73f2f616",
 # "✳ acme+super.0bb870c2".
 set -euo pipefail
+# -h/--help: the header above. A PANE that starts with - is a flag this does
+# not know (a pane is %N): it refuses, exit 2, the usage on stderr.
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  -*) echo "tmux-send-agent: unknown argument '$1'" >&2; usage >&2; exit 2;;
+esac
 
 pane="${1:?usage: tmux-send-agent <pane> [words...]}"; shift || true
 [ "${1:-}" = "--" ] && shift
@@ -31,10 +38,13 @@ from="$("$here/sessionview-from")"
 message_bin="$(command -v message || true)"
 [ -n "$message_bin" ] || message_bin="$HOME/.local/bin/message"
 if [ ! -x "$message_bin" ]; then
-  tmux display-message -t "$pane" "agent menu: no 'message' command (install sessionmail)"
+  tmux display-message -l -t "$pane" "agent menu: no 'message' command (install sessionmail)"
   exit 3
 fi
 
+# The title is the pane's own text (OSC 2 sets it), so every status line
+# that may carry it, or a send error, is shown with -l: literal, never a
+# format. Without -l a title of `a #{host}` showed the host name.
 title="$(tmux display-message -p -t "$pane" '#{pane_title}')"
 
 to=""
@@ -53,7 +63,7 @@ if [ -z "$to" ]; then
   addr="$(printf '%s\n' "$title" | grep -oE '[a-z_][a-z0-9_+-]*\.[A-Za-z0-9][A-Za-z0-9._-]*(\+[A-Za-z0-9._-]+)*' | head -1 || true)"
   [ -n "$addr" ] || addr="$(printf '%s\n' "$title" | sed -nE 's/^[^ ]+ ([a-z][a-z0-9_-]*):.*$/\1/p' | head -1 || true)"
   if [ -z "$addr" ]; then
-    tmux display-message -t "$pane" "agent menu: no agent address in pane title '$title'"
+    tmux display-message -l -t "$pane" "agent menu: no agent address in pane title '$title'"
     exit 2
   fi
   # drop a trailing sid however it is hung on (+sid or .sid); keep a real +ext
@@ -67,8 +77,8 @@ fi
 # SESSIONVIEW_FROM carries the name resolved above, so it is resolved once.
 if out="$(SESSIONVIEW_FROM="$from" \
             "$here/sessionview-send" "$to" --subject "$subject" --no-body </dev/null 2>&1)"; then
-  tmux display-message -t "$pane" "sent '${subject% EOM}' -> $shown (from $from)"
+  tmux display-message -l -t "$pane" "sent '${subject% EOM}' -> $shown (from $from)"
 else
-  tmux display-message -t "$pane" "send FAILED -> $shown: ${out##*$'\n'}"
+  tmux display-message -l -t "$pane" "send FAILED -> $shown: ${out##*$'\n'}"
   exit 1
 fi

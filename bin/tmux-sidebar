@@ -2,6 +2,33 @@
 ''':'
 # Started by sh: re-run this file with a Python 3.11 or newer. The rest of
 # the file is Python; to Python, these lines are one string.
+# -h/--help is answered here, in sh, before any Python runs and before
+# load_config() reads (and seeds) the settings at import. So is an argument the
+# usage does not name: exit 2, the usage on stderr, nothing drawn.
+usage() { cat <<'USAGE'
+tmux-sidebar - the sessionview sidebar: projects (tmux sessions) on top,
+agents below, in the pane it runs in.
+
+usage: tmux-sidebar             draw it and take keys and clicks (needs a tty;
+                                with none it draws one frame and exits)
+       tmux-sidebar --once      draw one frame to stdout and exit
+       tmux-sidebar --popup     inside tmux display-popup: a jump closes it
+       tmux-sidebar --pick [windows|sessions|agents] [SESSION]
+                                the type-and-filter picker alone, in a popup
+
+It is usually started as `sessionview sidebar`, the frame's left pane, under a
+supervisor: q reloads it, Q quits. prefix H opens it as a popup.
+Settings: sessionview config (sessionview config path names the file).
+USAGE
+}
+refuse() { echo "tmux-sidebar: unknown argument '$1'" >&2; usage >&2; exit 2; }
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  ""|--once|--popup) [ $# -le 1 ] || refuse "$2";;
+  --pick) [ $# -lt 2 ] || case "$2" in windows|sessions|agents) ;; *) refuse "$2";; esac
+          [ $# -le 3 ] || refuse "$4";;
+  *) refuse "$1";;
+esac
 [ -n "${SESSIONVIEW_PYTHON:-}" ] && exec "$SESSIONVIEW_PYTHON" "$0" "$@"
 # >>> venv probe: the venv that installed this copy, before PATH.
 # Only for a wheel copy (site-packages/sessionview/_data); a checkout never
@@ -1708,7 +1735,7 @@ def short_name(name, grp):
     is a real group (not None, not PIN_GROUP), NAME starts with exactly
     `SESSION + "+"` (whole prefix, case counts: the header text really is the
     prefix) and something is left after the `+`. Anything else - ungrouped,
-    the pinned block, another project's name, legacy `foreman.AB-92`, a row
+    the pinned block, another project's name, legacy `foreman.ab-92`, a row
     named exactly `sessionview`, a remote session part that differs - comes
     back unchanged, as does a non-string GRP (group_by=<field> on an int
     field such as `pid` groups by its value; there is no prefix to drop)."""
@@ -1726,7 +1753,7 @@ def name_key(a, grp):
     name), then task seats by task
     id in NATURAL order (ab-92 before ab-104), foreman before workers within
     a task. A task seat is one whose first dot-segment is `<word>-<number>`.
-    Every other row (legacy `foreman.AB-92`, plain `alice`, another project's
+    Every other row (legacy `foreman.ab-92`, plain `alice`, another project's
     seat) keys `(1,)`: after the stripped rows, tied, so the stable sort
     keeps CFG["sort"] order among them."""
     n = a.get("name") or a.get("agent") or ""
@@ -3111,7 +3138,20 @@ def overlay(lines, targets):
             tgt[top + i] = body_at[i]
     return out, tgt
 
-_FIT = {"win": None, "pane": None}   # frame WINDOW width, and the pane width we last knew
+def fit_seed():
+    """The starting record fit() compares its first reading with: "WIN PANE",
+    the width the frame's window was born at and the width the frame gave
+    this pane (SESSIONVIEW_FIT_SEED, set by sessionview-frame). Without it a
+    drag made before the first render had nothing to be judged against, and
+    was put back as if the terminal had been resized. Read ONCE, here, and
+    taken out of the environment; the first fit() replaces it. It is never
+    written to the pane. Anything but two positive numbers is no seed."""
+    raw = os.environ.pop("SESSIONVIEW_FIT_SEED", "").split()
+    if len(raw) == 2 and all(x.isdigit() and int(x) > 0 for x in raw):
+        return {"win": str(int(raw[0])), "pane": int(raw[1])}
+    return {"win": None, "pane": None}
+
+_FIT = fit_seed()                      # frame WINDOW width, and the pane width we last knew
 MIN_DRAG = 12                          # narrower than this is a slip, not a wish
 SHRINK_AFTER = 5                       # renders (fit: auto) before the bar gives width back
 
@@ -3165,9 +3205,10 @@ def fit():
     pane's does):
 
       window changed  -> the terminal was resized and the outer server scaled
-                         its panes proportionally (a client-resized hook did
-                         not hold it, measured): put the
-                         wish back, as before.
+                         its panes proportionally: put the wish back, as
+                         before. This is the only thing that holds the width
+                         across a resize; the frame sets no resize hook (one
+                         once put back the frame-start width).
       window the same -> THE USER DRAGGED THE BORDER. That is the new width: adopt
                          it and remember it (`sessionview-config set width`,
                          and `fit fixed` - a drag always beats auto), so the
@@ -3179,6 +3220,8 @@ def fit():
     resize to the configured width. Nobody can drag a border in a session
     with no client, so those are put back, never remembered (a new user's
     first open once wrote width 100, half the window the frame starts in).
+    Before the first fit(), what it last knew is the frame's starting record
+    (fit_seed()), so a drag made before the first render is judged too.
 
     A drag below MIN_DRAG is a slip and is put back, not remembered. With
     `fit: auto` the wish itself moves (see wish()); the pane follows it."""
@@ -3193,25 +3236,33 @@ def fit():
         WIDTH = max(8, min(wish(), cols))
         return
     fsock = frame.split(":", 1)[0]
-    # one call: the window's width, and whether a client is attached to the frame
+    # one call: the window's width, whether a client is attached to the frame,
+    # and the pane's width as tmux has it now
     w = sh(["tmux", "-L", fsock, "display-message", "-p", "-t", pane,
-            "#{window_width} #{session_attached}"]).split()
+            "#{window_width} #{session_attached} #{pane_width}"]).split()
     win = w[0] if w else ""
     attached = len(w) > 1 and w[1] != "0"
+    # The pane width decides, not the pty's: the pty's size reaches us after
+    # tmux has resized the pane, so `cols` can still hold the old width in a
+    # window that has already changed. Read that way, a terminal resize from
+    # 160 to 120 once left a 14-wide sidebar in place, and the next render
+    # adopted 14 as a drag. A drag moves #{pane_width} at once, so
+    # it is seen sooner, never undone. `cols` only clamps what is drawn.
+    have = int(w[2]) if len(w) > 2 and w[2].isdigit() else cols
     known = _FIT["pane"]
-    dragged = (attached and win and win == _FIT["win"] and known is not None and cols != known)
-    if dragged and cols >= MIN_DRAG:
-        CFG["width"] = cols                                    # the drag is the wish
+    dragged = (attached and win and win == _FIT["win"] and known is not None and have != known)
+    if dragged and have >= MIN_DRAG:
+        CFG["width"] = have                                    # the drag is the wish
         if str(CFG.get("fit", "fixed")) in ("auto", "narrow", "focus"):
             CFG["fit"] = "fixed"
             subprocess.run([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config"),
                             "set", "fit", "fixed"], capture_output=True)
         subprocess.run([os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-config"),
-                        "set", "width", str(cols)], capture_output=True)
-        want = cols
+                        "set", "width", str(have)], capture_output=True)
+        want = have
     else:
         want = wish()
-        if cols != want:
+        if have != want:
             subprocess.run(["tmux", "-L", fsock, "resize-pane", "-t", pane,
                             "-x", str(want)], capture_output=True)
     _FIT["win"] = win or _FIT["win"]

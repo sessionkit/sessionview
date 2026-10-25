@@ -1,3 +1,17 @@
+# The default goal is help, never install. A bare `make`, `make -s` or `make -p`
+# (which prints make's database AND builds the default goal) must not act. When
+# install was the first target, a `make -s -f Makefile -p` run in a task
+# worktree to read one variable re-pointed a whole machine's ~/.local/bin into
+# that worktree. Installing is always named: make install.
+.DEFAULT_GOAL := help
+
+help:  ## list the targets; changes nothing
+	@echo "make install   link the bin/ tools into ~/.local/bin (or \$$PREFIX/bin), then check requirements"
+	@echo "make check     check requirements only; change nothing"
+	@echo "make app       build and install the macOS Dock app"
+	@echo "make test      run the suite"
+	@echo "make build | release | push | publish | scan   releases (see the Makefile)"
+
 install:
 	@bin/sessionview-install
 
@@ -22,7 +36,7 @@ test:
 	@echo "make test: $$($(PYTHON) -c 'import sys; print(sys.executable, sys.version.split()[0])')"
 	@$(PYTHON) -B -m unittest discover -s tests -t . -v
 
-.PHONY: install check app test
+.PHONY: help install check app test
 
 # Releases. The ONE version lives in pyproject.toml; scripts/release.py bumps it
 # with uv and mirrors it into the plugin manifest(s) and __version__.
@@ -32,11 +46,22 @@ BUMP ?= patch
 build:  ## wheel + sdist into dist/
 	@uv build
 
+# release.py is stdlib-only, so python3 runs it: a plain `uv run` would re-lock
+# the project before the script starts.
 release:  ## bump (BUMP=patch|minor|major) or set (VERSION=X.Y.Z), then mirror, changelog, commit, tag
-	@uv run python scripts/release.py $(or $(VERSION),$(BUMP))
+	@python3 scripts/release.py $(or $(VERSION),$(BUMP))
 
-push:  ## push the branch and the tags to origin (release never pushes; this is the line it printed)
-	@git push origin HEAD && git push origin --tags
+# Push the branch by name, then the ONE release tag by its full refname. Never a
+# push of all tags: that sends every local tag (fallback/*, export/*, ready/*).
+# The version is pyproject.toml's, read the way scripts/release.py reads it (a
+# read, which never locks). A detached HEAD, an unreadable version or a missing
+# tag is refused before anything is pushed, the branch included.
+push:  ## push the branch, then the ONE release tag refs/tags/vX.Y.Z by name (pyproject's version); refuses if that tag is not here
+	@branch="$$(git symbolic-ref --short -q HEAD)" && [ -n "$$branch" ] || { echo "push: HEAD is detached - check out the release branch; nothing pushed" >&2; exit 1; }; \
+	version="$$(uv version --short)" && [ -n "$$version" ] || { echo "push: could not read the version from pyproject.toml (uv version --short) - nothing pushed" >&2; exit 1; }; \
+	tag="v$$version"; \
+	git rev-parse -q --verify "refs/tags/$$tag" >/dev/null || { echo "push: tag $$tag is not in this repository - run 'make release' first; nothing pushed" >&2; exit 1; }; \
+	git push origin "$$branch" && git push origin "refs/tags/$$tag"
 
 # THE TOKEN NEVER TOUCHES A COMMAND LINE. argv is readable by every process
 # on the machine (`ps`); a child's environment only by its own user. So the

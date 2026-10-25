@@ -194,7 +194,7 @@ class WheelCopy(ProbeEnv):
         self.assertTrue(ran(self.log, "VENV", "sessionview-config"), "not run on the venv's python3")
 
     def test_tmux_sidebar_runs_on_the_venv_python(self):
-        r = self.run_sh([os.path.join(self.data, "bin", "tmux-sidebar"), "--help"])
+        r = self.run_sh([os.path.join(self.data, "bin", "tmux-sidebar"), "--once"])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn(NEEDS, r.stderr)
         self.assertTrue(ran(self.log, "VENV", "tmux-sidebar"), "not run on the venv's python3")
@@ -221,7 +221,7 @@ class WheelCopy(ProbeEnv):
             os.symlink(os.path.join(self.data, "bin", tool), os.path.join(links, tool))
         r = self.run_sh([os.path.join(links, "sessionview-config"), "get", "project_dirs"])
         self.assertEqual(r.returncode, 0, r.stderr)
-        r = self.run_sh([os.path.join(links, "tmux-sidebar"), "--help"])
+        r = self.run_sh([os.path.join(links, "tmux-sidebar"), "--once"])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(ran(self.log, "VENV", "sessionview-config"))
         self.assertTrue(ran(self.log, "VENV", "tmux-sidebar"))
@@ -246,7 +246,7 @@ class TooOldVenv(ProbeEnv):
     def test_a_venv_with_no_python3_falls_through_to_path(self):
         _venv, data = fake_wheel(self.home, None)
         wrapper(os.path.join(self.stubs, "python3.14"), self.log, "PATH")
-        r = self.run_sh([os.path.join(data, "bin", "tmux-sidebar"), "--help"])
+        r = self.run_sh([os.path.join(data, "bin", "tmux-sidebar"), "--once"])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(ran(self.log, "PATH", "tmux-sidebar"))
 
@@ -256,7 +256,7 @@ class Checkout(ProbeEnv):
 
     def test_the_checkout_takes_path_python3_14(self):
         wrapper(os.path.join(self.stubs, "python3.14"), self.log, "PATH")
-        for tool, args in (("sessionview-config", ["get", "project_dirs"]), ("tmux-sidebar", ["--help"])):
+        for tool, args in (("sessionview-config", ["get", "project_dirs"]), ("tmux-sidebar", ["--once"])):
             with self.subTest(tool=tool):
                 r = self.run_sh([os.path.join(support.BIN, tool), *args])
                 self.assertEqual(r.returncode, 0, r.stderr)
@@ -282,7 +282,7 @@ class Checkout(ProbeEnv):
     def test_no_python_3_11_is_still_the_loud_message(self):
         # Not a silent wrong Python: the message and exit 1.
         for rel, args in (("bin/sessionview-config", ["get", "project_dirs"]),
-                          ("bin/tmux-sidebar", ["--help"]),
+                          ("bin/tmux-sidebar", ["--once"]),
                           ("lib/sessionview-config-screen", ["--help"])):
             with self.subTest(tool=rel):
                 r = self.run_sh([os.path.join(support.REPO, rel), *args])

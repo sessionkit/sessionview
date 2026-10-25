@@ -5,6 +5,7 @@
 #     && ~/Code/sessionview/bin/sessionview-install
 #   make install                          the same thing, from the checkout
 #   sessionview-install --check           report only, change nothing
+#   sessionview-install --relink          move links that run ANOTHER checkout here
 #   sessionview-install --app             build and install the macOS Dock app
 #   uv tool install sessionview           the package: commands on PATH, then
 #                                         `sessionview install` only checks
@@ -19,15 +20,42 @@
 # then checks each requirement and says PASS / WARN / MISSING with the fix.
 # It installs nothing else - your package manager owns tmux and python - and
 # it never edits your shell config: if ~/.local/bin is not on PATH it prints
-# the line to add. Re-running is safe (ln -sf).
+# the line to add. Re-running is safe (ln -sfn).
+#
+# It never moves links that run a DIFFERENT checkout. The links in the bin dir
+# say which checkout this machine runs. If a tool's name there is a link into
+# another checkout (a second clone, a git worktree, a uv tool's scripts), or a
+# file that is not a link, it refuses: it lists them, changes nothing and exits
+# 3. --relink moves them here on purpose; PREFIX=DIR installs somewhere else.
+# --check WARNs on each one and changes nothing, so they show without an
+# install. A fresh bin dir, or a re-run from the checkout the links point
+# into, links as before. (When `install` was the Makefile's first target, a
+# `make -p` run in a task worktree to read one variable re-pointed a whole
+# machine's sidebar into that worktree, and nothing printed a word.)
 set -u
+# -h/--help: the header above, and nothing else. Before the case
+# below, which refuses a word it does not know before anything is written.
+# The header ends at `set -u`, not at a line number, so it can grow.
+case "${1:-}" in -h|--help) sed -n '/^set -u$/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; exit 0;; esac
 SESSIONVIEW_ROOT="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
 BIN="${PREFIX:-$HOME/.local}/bin"
-CHECK=""; APP=""
+CHECK=""; APP=""; RELINK=""
 case "${1:-}" in
   --check) CHECK=1;;
+  --relink) RELINK=1;;
   --app) exec "$SESSIONVIEW_ROOT/bin/sessionview-app-install" "${2:-}";;
-esac
+  "") ;;
+  *) false;;
+esac && BAD="" || BAD="$1"
+# Anything else refuses before anything is written: an unknown word,
+# and --version, once fell through to the link step. So does one argument too
+# many. (The case above fails only on its `*` arm, so BAD is never inherited.)
+# The usage is the --help text, read the same way: to `set -u`.
+[ $# -le 1 ] || BAD="${BAD:-$2}"
+if [ -n "$BAD" ]; then
+  { echo "sessionview-install: unknown argument '$BAD'"; sed -n '/^set -u$/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; } >&2
+  exit 2
+fi
 # Installed as a package (uv tool install sessionview), the commands are
 # already on PATH and this checkout is site-packages: link nothing.
 PACKAGED=""; [ "$(basename "$SESSIONVIEW_ROOT")" = "_data" ] && PACKAGED=1
@@ -35,7 +63,56 @@ rc=0
 say()  { printf '  %-8s %s\n' "$1" "$2"; }
 fail() { say MISSING "$1"; rc=1; }
 
+# ours LINK NAME: the symlink LINK points at this checkout's bin/NAME, by its
+# text (absolute, or relative to $BIN) or by where it resolves.
+ours() {
+  t="$(readlink "$1")" || return 1
+  case "$t" in /*) ;; *) t="$BIN/$t";; esac
+  [ "$t" = "$SESSIONVIEW_ROOT/bin/$2" ] && return 0
+  a="$(readlink -f "$1" 2>/dev/null)" && [ -n "$a" ] &&
+    [ "$a" = "$(readlink -f "$SESSIONVIEW_ROOT/bin/$2" 2>/dev/null)" ]
+}
+
+# each_foreign CMD: run `CMD NAME TARGET` for each tool name in $BIN that is
+# not this checkout's bin/NAME: a link elsewhere (TARGET is its text, with
+# " (missing)" when it dangles) or a file that is not a link. A name with
+# nothing in $BIN is not foreign. The install's guard and --check both ask.
+each_foreign() {
+  for f in "$SESSIONVIEW_ROOT"/bin/sessionview* "$SESSIONVIEW_ROOT"/bin/tmux-sidebar; do
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    name="$(basename "$f")"; l="$BIN/$name"
+    if [ -L "$l" ]; then
+      ours "$l" "$name" && continue
+      t="$(readlink "$l")"; [ -e "$l" ] || t="$t (missing)"
+    elif [ -e "$l" ]; then
+      t="(a file, not a link)"
+    else
+      continue
+    fi
+    "$1" "$name" "$t"
+  done
+}
+
 if [ -z "$CHECK" ] && [ -z "$PACKAGED" ]; then
+  # The guard runs before anything is written (no mkdir, no sweep, no link).
+  if [ -z "$RELINK" ]; then
+    foreign=""
+    refuse_line() { foreign="$foreign$(printf '    %-26s -> %s' "$1" "$2")
+"; }
+    each_foreign refuse_line
+    if [ -n "$foreign" ]; then
+      {
+        echo "sessionview-install: refusing to re-point links in $BIN"
+        echo "  they run another checkout's sessionview, not this one ($SESSIONVIEW_ROOT):"
+        printf '%s' "$foreign"
+        echo "  nothing was changed. To move them to this checkout on purpose:"
+        echo "    $SESSIONVIEW_ROOT/bin/sessionview-install --relink"
+        echo "  or install this checkout somewhere else:"
+        echo "    PREFIX=/some/dir $SESSIONVIEW_ROOT/bin/sessionview-install"
+      } >&2
+      exit 3
+    fi
+  fi
   mkdir -p "$BIN"
   # Drop links to tools that no longer exist (sessionview-configure, 0.2.0).
   for l in "$BIN"/sessionview* "$BIN"/tmux-sidebar; do
@@ -44,7 +121,7 @@ if [ -z "$CHECK" ] && [ -z "$PACKAGED" ]; then
   n=0
   for f in "$SESSIONVIEW_ROOT"/bin/sessionview* "$SESSIONVIEW_ROOT"/bin/tmux-sidebar; do
     [ -f "$f" ] && [ -x "$f" ] || continue
-    ln -sf "$f" "$BIN/$(basename "$f")" && n=$((n + 1))
+    ln -sfn "$f" "$BIN/$(basename "$f")" && n=$((n + 1))
   done
   echo "sessionview: linked $n tools into $BIN"
 fi
@@ -100,6 +177,10 @@ if command -v notmuch >/dev/null 2>&1; then
 else say WARN "notmuch not on PATH - the messages tab has no sidebar (brew install notmuch)"; fi
 # optional
 command -v tm >/dev/null 2>&1        && say PASS "tm (optional)"        || say "-" "tm not installed (optional: taskmaster menu items)"
+# links that run another checkout: what the install would refuse over, seen
+# without running it. A WARN, so the exit status is the requirements' alone.
+warn_foreign() { say WARN "$1 -> $2 - not this checkout's, so an install refuses; to move it here: $SESSIONVIEW_ROOT/bin/sessionview-install --relink"; }
+[ -z "$CHECK" ] || [ -n "$PACKAGED" ] || each_foreign warn_foreign
 # PATH
 [ -n "$PACKAGED" ] || case ":$PATH:" in
   *":$BIN:"*) say PASS "$BIN is on PATH";;

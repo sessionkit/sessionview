@@ -90,7 +90,7 @@ Each table below gives a key's type, its default and what it does.
 
 | Key | Type | Default | What it does |
 | --- | --- | --- | --- |
-| `user_mail_command` | string | `"neomutt"` | The mail client the `✉ mail` row opens, typed as is. `""`: no row. |
+| `user_mail_command` | string | `"neomutt"` | The mail client the `✉ mail` row opens, typed as is. `""`: no row. Template or home only. |
 | `user_mail_socket` | string | `"default"` | The tmux server that session lives on. |
 | `user_mail_session` | string | `"mail"` | That session's name. |
 | `user_mail_format` | string | `" ✉ mail"` | The row's label. |

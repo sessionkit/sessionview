@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionview"
-version = "0.3.0"
+version = "0.3.1"
 description = "A sidebar for tmux: your projects (sessions) and your agents, here and on remote hosts."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -45,6 +45,12 @@ packages = ["src/sessionview"]
 "tmux" = "sessionview/_data/tmux"
 "plugins" = "sessionview/_data/plugins"
 "macos" = "sessionview/_data/macos"
+# The docs a shipped file links to, by name, at the same place relative to it:
+# config/README.md links ../docs/configuration.md, which links settings.md.
+# docs/dependencies.md stays out: it links ../README.md and ../uv.lock, which
+# the wheel does not ship. tests/test_wheel_links.py reads the built wheel.
+"docs/configuration.md" = "sessionview/_data/docs/configuration.md"
+"docs/settings.md" = "sessionview/_data/docs/settings.md"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/sessionview", "bin", "lib", "config", "tmux", "plugins", "macos", "README.md", "LICENSE", "pyproject.toml"]
+include = ["src/sessionview", "bin", "lib", "config", "tmux", "plugins", "macos", "docs", "README.md", "LICENSE", "pyproject.toml"]

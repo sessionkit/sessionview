@@ -302,5 +302,57 @@ class FieldInjection(UntrustedBase):
             self.assertNotIn("SV145-PWNED", line)
 
 
+
+# A harmless marker wrapped in control characters: ESC [ 31 m (red), DEL, the
+# C1 CSI (0x9b) and BEL. Printed raw, a terminal would take them as commands.
+CONTROLS = ("\x1b", "\x7f", "\x9b", "\x07")
+CTRL_NAME = "tab\x1b[31mMARK\x7f\x9b0m\x07"
+CTRL_SHOWN = "tab[31mMARK0m"
+
+
+class ControlCharacters(UntrustedBase):
+    """An untrusted window name reaches the terminal with no control character
+    in it: in the notice that its command was ignored, in the `windows` rows,
+    and in sessionview-session's --print plan, which prints both."""
+
+    def setUp(self):
+        super().setUp()
+        write_json(self.dot, planted(extra_windows=(
+            {"name": CTRL_NAME, "position": 3, "when": "always", "cwd": "root", "command": PLANT},
+            {"name": "\x1b\x07", "position": 4, "when": "always", "cwd": "root"},
+        )))
+
+    def assertClean(self, text, where):
+        for c in CONTROLS:
+            self.assertNotIn(c, text, f"{where} holds {c!r}: {text!r}")
+
+    def test_the_notice_and_the_rows_carry_no_control_character(self):
+        rows, err = self.rows("--project", self.repo)
+        r = self.cli("windows", "--project", self.repo)
+        self.assertClean(r.stdout, "windows rows")
+        self.assertClean(err, "the notice")
+        self.assertIn(f"{self.dot}: windows[{CTRL_SHOWN}].command ignored", err)
+        self.assertEqual(rows[CTRL_SHOWN][:5], ["3", CTRL_SHOWN, "always", "root", "-"])
+
+    def test_a_name_of_control_characters_only_is_no_name(self):
+        rows, err = self.rows("--project", self.repo)
+        self.assertIn("windows[3]: needs a name (skipped)", err)
+        self.assertEqual(list(rows), ["pwn", "git", CTRL_SHOWN])
+
+    def test_the_print_plan_carries_no_control_character(self):
+        plan = self.project_plan()
+        self.assertClean(plan, "the --print plan")
+        self.assertIn(f"-n {CTRL_SHOWN}", plan)
+        self.assertIn(f"windows[{CTRL_SHOWN}].command ignored", plan)
+
+    def test_list_windows_carries_no_control_character(self):
+        r = support.run("sessionview-session", "evil", "--socket", self.pt.sock,
+                        "--store", self.fx.path("fx-legacy"), "--repo", self.repo,
+                        "--list-windows", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertClean(r.stdout, "--list-windows")
+        self.assertIn(CTRL_SHOWN + "\t", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@
 #
 #   sessionview-messages PROJECT [--store SLUG] [--print]
 #
+# (end of usage)
 # A project session comes up with a messages tab by default; the tab is
 # named `messages` in both store and project sessions. Three facts, each
 # measured:
@@ -52,20 +53,42 @@ SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev
 # SETTINGS_DIR in bin/sessionview-config): your neomuttrc lives here, beside
 # view.json.
 VIEW_SETTINGS="$HOME/.sessionkit/view/settings"
-usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# The usage, to the marker: on stdout for -h, on stderr for a refusal.
+usage_text() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { if [ "${1:-0}" = 0 ]; then usage_text; else usage_text >&2; fi; exit "${1:-0}"; }
 NAME=""; SLUG=""; PRINT=0
 while [ $# -gt 0 ]; do case "$1" in
   -h|--help) usage;;
-  --store) SLUG="$2"; shift;;
+  # A missing value, or a flag where the slug goes, refuses; an EMPTY slug
+  # is no store, which the shipped messages tab passes with no registry.
+  --store) case "${2--}" in -*)
+             echo "sessionview-messages: --store needs a value (a store slug)" >&2; usage 2;; esac
+           SLUG="$2"; shift;;
   --print) PRINT=1;;
   -*) echo "sessionview-messages: unknown flag $1" >&2; usage 2;;
   *) NAME="$1";;
 esac; shift; done
 [ -n "$NAME" ] || { echo "sessionview-messages: PROJECT required" >&2; usage 2; }
+# NAME, SLUG and FOLDER are written into the rc that `neomutt -F` RUNS, inside
+# double quotes, where a backtick runs a command, $ expands, \ escapes and "
+# ends the string; a line break starts a new rc line. So a name is a plain box
+# name (the characters spelt out: a range like A-Z follows the locale), and a
+# folder holding any of those is refused, before the rc is written.
+# A name is also refused by its SHAPE: `.`, `..`, or a leading . or -. The box
+# is `message path [SLUG/]NAME`, which joins it under the mail root without a
+# check of its own, so `..` climbs out of the agents tree and a leading - reads
+# as a flag. A leading . covers `.` and `..`.
+BOXCHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+-'
+BOXRULE="letters, digits and . _ + - only, and does not begin with . or - (no . or ..)"
+plain() { case "$1" in *[!"$BOXCHARS"]*|.*|-*) return 1;; esac; }
+plain "$NAME" || { echo "sessionview-messages: PROJECT '$NAME' refused: a box name is $BOXRULE" >&2; exit 2; }
+[ -z "$SLUG" ] || plain "$SLUG" || { echo "sessionview-messages: --store '$SLUG' refused: a store slug is $BOXRULE" >&2; exit 2; }
 command -v message >/dev/null 2>&1 || { echo "sessionview-messages: no \`message\` on PATH - sessionmail is not installed (github.com/sessionkit/sessionmail)" >&2; exit 2; }
 command -v neomutt >/dev/null 2>&1 || { echo "sessionview-messages: no neomutt on PATH - brew install neomutt" >&2; exit 2; }
 BOX="$NAME"; [ -n "$SLUG" ] && BOX="$SLUG/$NAME"
 FOLDER="$(message path "$BOX" 2>&1)" || { echo "sessionview-messages: $FOLDER" >&2; exit 2; }
+case "$FOLDER" in *[\"\`\\\$]*|*[[:cntrl:]]*)
+  echo "sessionview-messages: $BOX: folder refused: it holds a \" \` \\ \$ or control character, which the rc would run or break on" >&2; exit 2;; esac
 [ -d "$FOLDER" ] || { echo "sessionview-messages: $BOX: $FOLDER is not a directory" >&2; exit 2; }
 # The sidebar's rows: per project, so written here, not in config/neomuttrc.
 SIDEBAR=""; SIDEBAR_WHY=""

@@ -68,8 +68,8 @@ is generated from a template:
                                       project's own last, so nearest wins
 
 Layers 3 and 4 are UNTRUSTED (a cloned repo can carry one), by POSITION, not
-path: they never set a key that runs something. `agent_command` is read from
-layers 1-2 only; a `windows` / `store_windows` entry from layer 3 or 4 keeps
+path: they never set a key that runs something. `agent_command` and
+`user_mail_command` are read from layers 1-2 only; a `windows` / `store_windows` entry from layer 3 or 4 keeps
 its data, but its `command` is the one layers 1-2 give the same name, else
 none (a plain shell). Each key ignored is named on stderr with its file.
 
@@ -82,7 +82,7 @@ If the old home file is still there BESIDE the new one, every verb that
 reads the config warns once on stderr ("warning: remove the leftover ...")
 and goes on: a --project walk-up under the home dir reads it as layer 4.
 """
-import json, shlex, tempfile, os, sys
+import json, shlex, tempfile, os, sys, unicodedata
 
 SESSIONVIEW_ROOT = os.environ.get("SESSIONVIEW_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 TEMPLATE = os.path.join(SESSIONVIEW_ROOT, "config", "config.json")
@@ -212,13 +212,14 @@ def layers(project=None, store=None):
 # TRUST BY POSITION. layers()[:TRUSTED] - the template and
 # the home file - are yours; every later layer (STORE/.sessionview and the
 # --project walk-up chain) may be a cloned repo's, so it never sets a key that
-# EXECUTES: `agent_command` (plugins/session/start-agent exec's it) or the
+# EXECUTES: `agent_command` (plugins/session/start-agent exec's it),
+# `user_mail_command` (bin/sessionview-usermail types it in with Enter) or the
 # `command` of a `windows` / `store_windows` entry (bin/sessionview-session
 # types it in with Enter). Decided by INDEX, never by path: a leftover
 # old home (LEGACY_HOME_FILE) reached by the walk-up from --project is a
 # project-chain layer, untrusted like any other (leftover() warns of it).
 TRUSTED = 2
-EXEC_KEYS = ("agent_command",)
+EXEC_KEYS = ("agent_command", "user_mail_command")
 EXEC_LISTS = ("windows", "store_windows")
 
 def commands(rows):
@@ -226,18 +227,29 @@ def commands(rows):
     return {str(w.get("name", "")).strip(): w["command"] for w in rows
             if isinstance(w, dict) and w.get("command")} if isinstance(rows, list) else {}
 
+def printable(v):
+    """V as text that is safe to print: every control character dropped (C0,
+    DEL and C1, Unicode category Cc). THE one place an untrusted value is made
+    printable. A layer past TRUSTED may be a cloned repo's, and a window name
+    holding ESC (0x1b) would restyle the terminal it is printed to: in the
+    untrusted() notice, and in the `windows` rows that sessionview-session
+    prints in its --print plan and the picker shows. A tab or line break is
+    the caller's to turn into a space first, where it splits a cell."""
+    return "".join(c for c in str(v) if unicodedata.category(c) != "Cc")
+
 def untrusted(d, f, trusted):
     """D (layer file F) without its executing keys. An entry of an executing
     list keeps its data (position, name, when, cwd, focus, auto, console); a
     command it sets is replaced by the TRUSTED command for the same name, else
     dropped (a plain shell). So a project may reorder or retime the shipped
     tabs, and add plain ones, but types nothing of its own. Each drop is named
-    on stderr with the file, so a surprise has a path."""
-    out = dict(d)
+    on stderr with the file, so a surprise has a path: both through
+    printable(), since both are the layer's."""
+    out, shown = dict(d), printable(f)
     for k in EXEC_KEYS:
         if k in out:
             del out[k]
-            print(f"sessionview-config: {f}: {k} ignored (only the template and the home "
+            print(f"sessionview-config: {shown}: {k} ignored (only the template and the home "
                   f"file may set it)", file=sys.stderr)
     for k in EXEC_LISTS:
         rows = out.get(k)
@@ -250,7 +262,7 @@ def untrusted(d, f, trusted):
             name = str(w.get("name", "")).strip()
             mine = trusted[k].get(name)
             if w["command"] != mine:
-                print(f"sessionview-config: {f}: {k}[{name}].command ignored "
+                print(f"sessionview-config: {shown}: {k}[{printable(name)}].command ignored "
                       f"(only the template and the home file may set one; "
                       f"{'theirs is used' if mine else 'a plain shell'})", file=sys.stderr)
             if mine:
@@ -281,18 +293,53 @@ def show(v):
         return v
     return json.dumps(v, ensure_ascii=False)
 
+# Words per verb, the verb included: the grammar in __doc__. The bare form
+# (no verb) opens the screen and is not in it.
+WORDS = {"edit": 1, "list": 1, "path": 1, "init": 1, "dump": 1,
+         "windows": 1, "get": 2, "set": 3, "unset": 2}
+SLOTS = {"get": ["KEY"], "set": ["KEY", "VALUE"], "unset": ["KEY"]}
+
+def refuse(why):
+    """Input this cannot use: the reason, then the usage, on stderr; exit 2."""
+    print(f"sessionview-config: {why}", file=sys.stderr)
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
 def main(argv):
     args, project, store, where, as_json, force, key = [], None, None, False, False, False, "windows"
     it = iter(argv)
     for a in it:
-        if a == "--project": project = next(it, None)
-        elif a == "--store": store = next(it, None)
+        if a in ("--project", "--store", "--key"):
+            # A flag with no value after it refuses. An EMPTY value is not
+            # missing: sessionview-session passes `--store ""` with no store.
+            v = next(it, None)
+            if v is None:
+                return refuse(f"{a} needs a value")
+            if a == "--project": project = v
+            elif a == "--store": store = v
+            else: key = v or "windows"
         elif a == "--where": where = True
         elif a == "--json": as_json = True
         elif a == "--force": force = True
-        elif a == "--key": key = next(it, None) or "windows"
         elif a in ("-h", "--help"): print(__doc__.strip()); return 0
+        elif a == "--": args += list(it); break
+        elif a.startswith("-") and a != "-" and not (args[:1] == ["set"] and len(args) == 2):
+            # A flag it does not know refuses before any layer is read (reading
+            # one makes the home file): exit 2, the usage on stderr. Only the
+            # VALUE of `set KEY VALUE` may start with -, as it always could.
+            return refuse(f"unknown flag '{a}'")
         else: args.append(a)
+    # The verb and its word count, checked before anything reads a layer:
+    # reading one makes the home file, so a word this does not know, or one
+    # missing or too many, refuses here.
+    if args:
+        verb, want = args[0], WORDS.get(args[0])
+        if want is None:
+            return refuse(f"unknown word '{verb}'")
+        if len(args) > want:
+            return refuse(f"{verb}: unexpected word '{args[want]}'")
+        if len(args) < want:
+            return refuse(f"{verb}: {' '.join(SLOTS[verb][len(args) - 1:])} required")
     screen = os.path.join(SESSIONVIEW_ROOT, "lib", "sessionview-config-screen")
     if not args or args[0] in ("edit", "list"):
         # One command for the engine and the screen: no verb opens the screen,
@@ -337,7 +384,12 @@ def main(argv):
             print("sessionview-config: window_pins: not an object (ignored)", file=sys.stderr); pins = {}
         out = []
         for i, w in enumerate(rows):
-            if not isinstance(w, dict) or not str(w.get("name", "")).strip():
+            # A name is matched as a STRING (a pin, a trusted command, a tab):
+            # a JSON list or object here once traced back at the pin lookup.
+            if isinstance(w, dict) and "name" in w and not isinstance(w["name"], str):
+                print(f"sessionview-config: {key}[{i}]: name {json.dumps(w['name'])} is not a string (skipped)",
+                      file=sys.stderr); continue
+            if not isinstance(w, dict) or not printable(w.get("name", "")).strip():
                 print(f"sessionview-config: {key}[{i}]: needs a name (skipped)", file=sys.stderr); continue
             try:
                 pos = int(w.get("position", 1000))
@@ -352,8 +404,10 @@ def main(argv):
         # began a row of its own), and the command was typed with Enter.
         # A cell never comes out EMPTY either (its default stands in): `read`
         # collapses two TABs into one, which shifts the columns just the same.
+        # Every other control character is dropped (printable()): the rows
+        # reach a terminal in the --print plan and the picker.
         def cell(v, default):
-            return " ".join(str(v).replace("\t", " ").splitlines()).strip() or default
+            return printable(" ".join(str(v).replace("\t", " ").splitlines())).strip() or default
         for pos, _, w in sorted(out, key=lambda t: (t[0], t[1])):
             cmd = cell(w.get("command") or "", "-")
             auto = pins[w["name"]] if isinstance(pins.get(w["name"]), bool) else w.get("auto")

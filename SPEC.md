@@ -99,7 +99,13 @@ defaults, not fixed. Rules:
   to `width_min` and `width_max`. A drag on the seam becomes the new
   `width`. Only a drag counts: before a client is attached the pane is
   changed by the frame itself (its split, its resize), and that is never
-  remembered.
+  remembered. A terminal resize, of the height or the width, is never a
+  drag either: the sidebar puts the wish back, and it is the only writer
+  of its width (the frame sets no resize hook). It reads its width from
+  tmux, not from its terminal size, which can lag a resize. The frame's
+  window is born at the size of the terminal that opens it, so attaching
+  changes no width, and the frame hands the sidebar the widths it set up,
+  so a drag made before the sidebar's first redraw is a drag too.
 - esc backs out of any view.
 
 ## 3. Actions
@@ -268,3 +274,7 @@ and so do two colours (`selected_fg`, `popup_bg`); the rest do not yet
 - `switch-client` moves the whole client: a sidebar pane inside the
   session would be left behind. That is why the sidebar runs in the
   frame or as a popup.
+- The sidebar tells a drag from a terminal resize by whether the
+  frame's window width changed since its last redraw. A drag and a width
+  resize of the terminal between two redraws read as a resize, and the
+  drag is put back: drag again.

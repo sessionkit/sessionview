@@ -7,9 +7,13 @@ controller and view for the `session` tools, drawn beside tmux.
 
 Install from PyPI: `uv tool install sessionview` (see [Install](#install)).
 
-    sessionview [SESSION]            # in this terminal: sidebar left, SESSION attached
-                                     # right (a private outer tmux holds the two panes)
-    prefix H                         # the same sidebar as a popup in any tmux client
+    sessionview
+
+In this terminal, that puts the sidebar on the left and the session
+`main` on the right; a private outer tmux holds the two panes.
+`sessionview NAME` attaches the session NAME instead, which must exist.
+In any tmux client, `prefix H` opens the same sidebar as a popup.
+Every verb, its form and an example: [the sessionview command](docs/sessionview.md).
 
 Read [SPEC.md](SPEC.md) first: what sessionview is, the rules of the view, the
 contract with `session`, the plugin manifest, config, known limits.
@@ -18,56 +22,13 @@ the spec; this stays comparable and runnable.
 
 ## Requirements
 
-Each line is measured against the code, not remembered;
-`bin/sessionview-install --check` checks tmux, Python, `session`,
-neomutt and notmuch's index on your machine.
+- [x] macOS (tested on macOS 27, Apple silicon)
+- [ ] Linux
+- [ ] WSL
+- [ ] Windows
 
-- **Claude Code, and the plugin is the install.** The `sessionview`
-  wheel is an empty package (one `__init__.py`, no `[project.scripts]`);
-  everything arrives through the Claude Code plugin (its `bin/` and
-  `skills/`).
-  From a clone: `claude plugin marketplace add <path-to-clone>`, then
-  `claude plugin install sessionview@sessionview`.
-- **macOS** for the dock app (`macos/SessionView.applescript`, built by
-  `osacompile`) and the sidebar's copy action (`pbcopy`). The sidebar and
-  the frame are plain tmux + Python and should run on Linux, untested.
-- **tmux >= 3.7** (measured on 3.7c: `join-pane -l`, `focus-events`,
-  status ranges). An older tmux satisfies `brew install tmux` silently.
-- **Python 3.11 to 3.14**, standard library only (`requires-python` in
-  `pyproject.toml` is `>=3.11,<3.15`; the sidebar and the config tools).
-- **bash**: macOS's 3.2 is enough; sessionview's own bash tools use no
-  bash-4 construct.
-- **sessionmail** (`message` on PATH) for every mail action: the
-  sidebar's mail, the agent pane menu, and the session, taskmaster and
-  voicemode plugins (each lists `message` in its `requires`). Mail is
-  sent as you: `$USER`, unless `sessionview-config set mail_from NAME`
-  (or `$SESSIONVIEW_FROM`) names your mail name; `sessionview from`
-  prints the name in effect.
-- **neomutt** for the `messages` tab (`bin/sessionview-messages` runs
-  `neomutt -R`; the tab exits 2 without it): `brew install neomutt`, built
-  with notmuch (Homebrew's is). Measured on NeoMutt 20260616. The tab's
-  sidebar (the box, Asks, Asks · threads) also needs **notmuch** with the
-  `Type` and `Project` headers indexed:
-  `notmuch config set index.header.Type Type`,
-  `notmuch config set index.header.Project Project`, then
-  `notmuch reindex '*'`. Without the index the Asks rows are every mail to
-  `NAME+ask`; without notmuch the sidebar is hidden and the tab still
-  opens the one folder.
-- **postfix: not needed by sessionview itself.** sessionview never talks
-  to an MTA; sessionmail's `message send` hands each mail to
-  `/usr/sbin/sendmail` (or `$SESSIONMAIL_SENDMAIL`) and refuses with
-  "no MTA" when there is none, so mail needs an MTA that delivers into
-  sessionmail's maildirs (postfix, for one; see sessionmail's README).
-  Without one, everything but mail still works.
-- optional: **`session`** on PATH for agents (`session list`,
-  `session start`), from sessiontools: `uv tool install sessiontools`.
-  Without it the sidebar still lists projects (tmux sessions), but shows
-  no agent rows and no Start an agent, and so none of the agent menu's
-  mail items (Message, Continue, Settle, ...: the session plugin
-  `requires` `session`). `message` itself still works from a shell.
-- optional: `tm` (taskmaster menu items) and the voicemode plugin, whose
-  menu items appear only when installed; ssh with ControlMaster for
-  remote hosts.
+The direct dependencies and the tools a user meets, what needs each one,
+and how to upgrade it: [dependencies](docs/dependencies.md).
 
 ## Features
 
@@ -157,41 +118,55 @@ hand. Blink Shell on iPad is wanted and not yet connecting.
                          claude-code: short, safe driving skills with tools
 
 Paths resolve from the checkout (`SESSIONVIEW_ROOT`); state lives in
-`~/.local/state/sessionview` (`SESSIONVIEW_STATE`). Requirements are listed above.
+`~/.local/state/sessionview` (`SESSIONVIEW_STATE`). Its direct dependencies:
+[dependencies](docs/dependencies.md).
 
 ## Install
 
 From PyPI:
 
     uv tool install sessionview
-    sessionview install            # checks every requirement; links nothing
+    sessionview install
 
 That puts `sessionview`, `sessionview-config`, `sessionview-session` and
-`sessionview-messages` on PATH; `sessionview install` then only checks.
+`sessionview-messages` on PATH; `sessionview install` then checks every
+requirement and links nothing.
 
 From a checkout:
 
     git clone https://github.com/sessionkit/sessionview ~/Code/sessionview
-    ~/Code/sessionview/bin/sessionview-install     # or: make install
+    ~/Code/sessionview/bin/sessionview-install
 
-That links the tools into `~/.local/bin` and checks every requirement,
+That links the tools into `~/.local/bin` (`make install` in the checkout
+does the same) and checks every requirement,
 saying PASS / WARN / MISSING with the fix for each (tmux below 3.7 is
 the one that bites: an older tmux satisfies `brew install tmux`
 silently). It installs nothing else and never edits your shell config.
 `sessionview-install --check` reports without changing anything. Then,
 in a new terminal: `sessionview`.
 
+The installer never moves links that already run another checkout (a
+second clone, a git worktree, or `uv tool install`'s commands): it lists
+them, changes nothing and exits 3. `--check` lists the same links as
+WARN lines. Run `bin/sessionview-install --relink` from the checkout you
+want to run, or set `PREFIX=DIR` to install somewhere else. A bare `make`
+only lists the targets; installing is always `make install`.
+
+The Claude Code plugin brings sessionview's skills. From a clone:
+`claude plugin marketplace add <path-to-clone>`, then
+`claude plugin install sessionview@sessionview`.
+
 show-me (github.com/mbailey/show-me) is referenced, not bundled.
 
 ### Dock app (macOS, optional)
 
-    sessionview install --app   # or: make app
+    sessionview install --app
 
-Builds `SessionView.app` from `macos/SessionView.applescript` and puts
-it in `~/Applications`; drag it to the Dock and one click opens
-sessionview in your preferred terminal (see Terminals above). It is a
-front door, not the product -- `sessionview` in any shell does the same
-job.
+That builds `SessionView.app` from `macos/SessionView.applescript` and
+puts it in `~/Applications` (`make app` in a checkout does the same);
+drag it to the Dock and one click opens sessionview in your preferred
+terminal (see Terminals above). It is a front door, not the product --
+`sessionview` in any shell does the same job.
 
 On a cold click the app reuses the window Terminal opens for itself at
 launch, rather than adding a second one. If your Terminal profile runs a
@@ -211,6 +186,139 @@ Rebuilding the app (`make app`) gives it a fresh ad-hoc signature, which
 macOS treats as a different app -- so the Accessibility permission has to
 be granted again after every rebuild. A stable signing identity would fix
 that; the app does not have one yet.
+
+## What an install changes
+
+`uv tool install sessionview` changes two places and fills uv's own
+cache, and it touches no shell startup file and nothing in `~/.claude`.
+`sessionview install` after it checks the requirements and changes
+nothing. Everything else below appears only when you run the verb named
+beside it. Each line says what puts it there and what takes it away.
+
+- **PATH:** `~/.local/bin/sessionview`, `sessionview-config`,
+  `sessionview-session` and `sessionview-messages`, or in
+  `UV_TOOL_BIN_DIR` when that is set. uv says so if the folder is not on
+  your PATH, and edits no shell file. `uv tool uninstall` removes them.
+  From a checkout instead, `bin/sessionview-install` (or `make install`)
+  links the checkout's `bin/sessionview*` tools and `tmux-sidebar` into
+  `~/.local/bin`, or into `PREFIX/bin` when `PREFIX` is set, and makes
+  nothing else. [Uninstall](#uninstall) has the line that deletes them.
+- **The program:** `~/.local/share/uv/tools/sessionview/`, its own
+  Python environment, or in `UV_TOOL_DIR`. sessionview has no Python
+  dependencies: the environment holds sessionview and the files it ships
+  (its tools, the tmux confs, the sidebar's plugins and the Dock app's
+  source). `uv tool uninstall` removes it. If uv finds no Python 3.11 or
+  newer, it downloads one into its own folder (`uv python dir`,
+  `~/.local/share/uv/python/` by default). `uv tool uninstall` leaves
+  that Python; `uv python uninstall` removes it.
+- **uv's cache:** the install fills it with what it downloaded and
+  built. It is uv's, shared by everything uv installs, not sessionview's.
+  `uv cache dir` prints where it is (`~/.cache/uv` by default, or
+  `UV_CACHE_DIR`). `uv tool uninstall` leaves it; `uv cache clean
+  sessionview` drops this package's entries, and `uv cache prune` drops
+  the ones nothing uses.
+- **Folders, each made by a verb you run:**
+  - `~/.local/state/sessionview/`: the state folder, made the first time
+    `sessionview` opens (or `sessionview session` or `sessionview
+    messages` runs). `SESSIONVIEW_STATE` moves it. An older release's
+    `~/.local/state/herd/` is renamed to it then, when only the old
+    one exists. In it:
+    - `frame-PID.tty`, one while each frame is open. The frame deletes
+      it when it closes; a frame killed outright can leave it behind.
+    - `sessionview.log`, the log ([Logs](#logs)).
+    - `recent.tsv`, a line each time `sessionview session` opens a
+      project, for the picker's order.
+    - `picker-order`, when you flip the picker's sort.
+    - `sidebar-mail.txt`, the last message typed at the sidebar's
+      message prompt.
+    - `plugin-PLUGIN-ACTION.txt`, the text a plugin's menu item last
+      sent (the session plugin's Message or Continue, say), one for
+      each item you have used.
+    - `sidebar-remote-HOST.json`, what the sidebar last saw from each
+      host in your `remotes` setting.
+    - `mutt/`, an rc file for each box `sessionview messages` opens.
+  - `~/Applications/SessionView.app`: `sessionview install --app` (or
+    `make app` in a checkout), or in `DEST` when that is set. It is
+    built in a temporary folder that is deleted after, and a rebuild
+    replaces it.
+- **Services (launchd agents):** none. sessionview runs no daemon and
+  writes nothing in `~/Library/LaunchAgents/`. While a frame is open it
+  runs a tmux server of its own, `sessionview-frame`, beside yours; the
+  server exits when the last frame closes.
+- **Plugin and skills, optional:** `claude plugin marketplace add` and
+  `claude plugin install` ([Install](#install)). Claude Code names the
+  marketplace and the plugin in `~/.claude/settings.json`
+  (`extraKnownMarketplaces`, `enabledPlugins`), lists them in
+  `~/.claude/plugins/`, and keeps a copy in
+  `~/.claude/plugins/cache/sessionview/`. The plugin brings five skills
+  (`sessionview`, `tmux`, `lazygit`, `neovim`, `claude-code`) and no
+  hooks. Uninstalling the plugin takes it out of the settings and leaves
+  the cached copy.
+  The sidebar's own plugins (`plugins/`: session, taskmaster, voicemode)
+  ship inside the program and install nothing. `SESSIONVIEW_PLUGINS`
+  names a folder of your own.
+- **Settings:** the install writes none.
+  `~/.sessionkit/view/settings/view.json` is made from the shipped
+  template the first time anything reads your settings: `sessionview`,
+  or a `sessionview-config` verb such as `get` (`path` only prints it).
+  `sessionview-config set` writes it. `SESSIONVIEW_CONFIG` names another
+  file instead. `~/.sessionkit/view/settings/neomuttrc` is there only if
+  you write it.
+- **Your tmux server, while it runs:** a frame binds keys on the tmux
+  server it attaches to: `prefix H` (the sidebar as a popup) and three
+  mouse bindings on the status line (`MouseDown1Status`,
+  `MouseDown1StatusRight`, `MouseDrag1Status`). It gives each session it
+  opens the sessionview look, with options set on that session only.
+  With `pane_menu` on, it also binds a right-click in a pane
+  (`MouseDown3Pane`), in place of yours, and sets two global
+  `@sessionview_agent_menu_` options. Nothing is written to
+  `~/.tmux.conf`: these last until that tmux server exits.
+- **Outside these folders, only on a verb:** with `fullscreen` on, the
+  Dock app on Terminal.app needs the Accessibility permission you grant
+  in System Settings, and macOS keeps it there until you turn it off.
+  *Start an agent* runs `session start`, and a message from the menu is
+  sent with `message`: what those make is in sessiontools' and
+  sessionmail's own lists. The `editor` tab, when it runs neovim,
+  listens on a socket in `$TMPDIR` while it runs. With no `TMPDIR`, the
+  socket goes in `XDG_RUNTIME_DIR`, or in `~/.local/run`, which is made
+  then and stays.
+
+## Uninstall
+
+Close every sessionview frame first. Then remove the plugin, if you
+installed it, and the command. Skip the lines for what you never
+installed:
+
+```console
+claude plugin uninstall sessionview@sessionview
+claude plugin marketplace remove sessionview
+uv tool uninstall sessionview
+```
+
+Installed from a checkout instead, delete the links it made, and the
+checkout if you want it gone:
+
+```console
+rm ~/.local/bin/sessionview ~/.local/bin/sessionview-* ~/.local/bin/tmux-sidebar
+```
+
+That leaves what the verbs made, listed above. The Dock app, the
+plugin's cached copy and the state folder are sessionview's alone. To
+delete them:
+
+```bash
+rm -rf "${HOME:?}/Applications/SessionView.app"
+rm -rf "${HOME:?}/.claude/plugins/cache/sessionview"
+rm -rf "${HOME:?}/.local/state/sessionview"
+```
+
+uv's cache stays too, with the other things uv installed; `uv cache
+clean sessionview` drops this package's entries. The key bindings go
+when your tmux server next exits.
+
+The rest is your data: delete it by hand only if you want it gone.
+`~/.sessionkit/view/` holds your settings, and the kit's other packages
+keep theirs beside it in `~/.sessionkit/`.
 
 ## Keys and clicks
 
@@ -253,7 +361,8 @@ The look follows herdr's; its colours were matched from herdr's own window.
   optional, read after the shipped `config/neomuttrc`.
 - **Plugins:** `plugins/<name>/plugin.toml` in the checkout.
 - **Environment:** `SESSIONVIEW_CONFIG` (another file for yours),
-  `SESSIONVIEW_FROM` (the name mail is sent as), `SESSIONVIEW_STATE`
+  `SESSIONVIEW_FROM` (the name mail is sent as, else `mail_from`, else
+  `$USER`; `sessionview from` prints the name in effect), `SESSIONVIEW_STATE`
   (state, default `~/.local/state/sessionview`), `SESSIONVIEW_PLUGINS`
   (another plugin directory).
 - sessionview does not read the kit's settings cascade today, only these.

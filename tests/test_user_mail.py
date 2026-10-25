@@ -218,9 +218,10 @@ class UserMailTool(unittest.TestCase):
 
     def test_usage(self):
         r = self.usermail("--nope")
-        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.returncode, 2)            # an unknown argument
+        self.assertTrue(r.stderr.startswith("sessionview-usermail: unknown argument --nope\n"), r.stderr)
         r = self.usermail("--socket")
-        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.returncode, 2)            # a flag without its value
 
 
 class UserMailRow(ViewBase):

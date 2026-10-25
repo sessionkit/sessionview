@@ -117,11 +117,13 @@ class DeclaredRange(unittest.TestCase):
                 hits += [f"{rel}:{n}" for n, line in enumerate(text.splitlines(), 1) if plain.search(line)]
         self.assertEqual(hits, [])
 
-    def test_the_readme_names_the_range(self):
-        # assertTrue, not assertIn: a failure names the line, not the whole README.
-        text = read("README.md")
-        self.assertTrue("**Python 3.11 to 3.14**" in text, "README names no 'Python 3.11 to 3.14'")
-        self.assertFalse("Python >= 3.11" in text, "README still says 'Python >= 3.11'")
+    def test_the_docs_name_the_range(self):
+        # The list lives in docs/dependencies.md; the README links it.
+        # assertTrue, not assertIn: a failure names the line, not the whole page.
+        text = read(os.path.join("docs", "dependencies.md"))
+        self.assertTrue("| Python 3.11 to 3.14 |" in text, "docs/dependencies.md names no 'Python 3.11 to 3.14'")
+        for rel in ("README.md", os.path.join("docs", "dependencies.md")):
+            self.assertFalse("Python >= 3.11" in read(rel), f"{rel} still says 'Python >= 3.11'")
 
 
 def fake_python(path):

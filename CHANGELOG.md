@@ -8,6 +8,125 @@ All notable changes to sessionview are documented here. The format is
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-25
+
+### Added
+
+- `sessionview --version` prints the version and exits 0. It was refused
+  with `unknown flag --version`.
+- `docs/dependencies.md`: the direct dependencies and the tools a user
+  meets, what needs each one, whether you need it, how it gets onto your Mac
+  and how you upgrade it. The README's Requirements is now the operating
+  systems and a link to it. `.github/dependabot.yml` looks for updates to
+  the Python dependencies daily.
+- `docs/dependencies.md` says where the full resolved set is: `uv.lock`,
+  every package at the version this repo is tested with.
+- The README's *What an install changes* lists what an install puts on
+  your Mac: the commands on PATH, the program, uv's cache, the folders
+  each verb makes, the plugin and its skills, your settings and the
+  keys a frame binds on your tmux server. Each line says what puts it
+  there and what takes it away, and a new *Uninstall* section says how
+  to remove it. sessionview runs no launchd service, and its plugin has
+  no hooks.
+- `docs/sessionview.md`: what `sessionview` does, each verb with its form,
+  and an example. The README links it, and the kit's own docs import it.
+
+### Fixed
+
+- A release no longer re-locks the project, and it pushes only what it
+  cut. `scripts/release.py` runs `uv version --frozen`, on a dry run too, and
+  writes the new version onto uv.lock's own `sessionview` line as text, so a
+  release changes no other line of uv.lock and resolves nothing. A plain
+  `uv version` re-locked: cut before a dependency's new release was on PyPI,
+  it failed, and with `UV_FIND_LINKS` set it wrote a lock of local paths that
+  the release then committed. The script refuses a uv.lock without exactly
+  one root `sessionview` block holding one `version` line, and a detached
+  HEAD, before it writes anything. `make release` runs the script with
+  `python3`, not `uv run`, which re-locked before the script started. The
+  push line it prints, and `make push`, send the branch by name and then the
+  one release tag, `refs/tags/vX.Y.Z`; they sent every local tag, and
+  `make push` now refuses a missing tag before it pushes anything.
+- A shell line in the docs no longer ends in a `#` comment. Pasted into
+  zsh, the macOS shell, the comment was not a comment: `sessionview
+  install   # checks every requirement; links nothing` passed the words to
+  the installer, which refused them, and then ran `links nothing` as a
+  command. Each explanation is now in the prose around its block.
+- The docs no longer say the wheel is an empty package: it carries the
+  whole tool and puts four commands on PATH. Nor do they say `message send`
+  needs a mail server: sessionmail writes into this host's maildirs by
+  default. neomutt is listed as required, as `sessionview install --check`
+  has treated it.
+- The installed `config/README.md` link to the upgrade notes works. The
+  wheel now ships `docs/configuration.md` and `docs/settings.md` next to
+  `config/`, so `../docs/configuration.md#upgrading-from-010` opens the page
+  in an installed copy too. Before, the link pointed at a file the wheel did
+  not have. The sdist carries `docs/`, so a wheel built from it ships them
+  as well.
+- Asking for help no longer does anything else. `sessionview sidebar
+  --help` started the sidebar, `install --help` ran the requirements check
+  (and, from a checkout, linked the tools onto PATH), `autostart --help`
+  decided whether to start an agent, and `from --help` and `terminal --help`
+  ran their lookups. Each now prints its usage and exits 0, and so does `-h`.
+  `sessionview --help` and `sessionview-frame --help` no longer make the
+  state directory before they print.
+- An argument a command does not know is refused: one line naming it, then
+  the command's whole usage, both on stderr, exit 2, and nothing done.
+  `install --version` linked every tool onto PATH and ran the requirements
+  check, `newtab --bogus` opened a tab named `--bogus`, `sidebar --bogus`
+  never exited, and `autostart`, `from`, `terminal`, `send`, `app-install`,
+  `tmux-send-agent` and `tmux-sidebar` acted too. `sessionview <command>
+  --bogus` no longer makes the state directory first. `session`,
+  `messages` and `usermail` print their usage on stderr when they refuse,
+  `sidebar-toggle` and `sessionview-frame` print it at all, and `usermail`
+  exits 2, not 1, on an unknown argument. Each `--help` is read to a marker
+  in the header, not a line number, so `sessionview-frame --help` no longer
+  stops mid-sentence. `sessionview --help` lists `terminal` and `usermail`.
+- The `messages` tab refuses a project or store name that is not letters,
+  digits and `. _ + -`, and a mail folder holding `"`, a backtick, `\`, `$`
+  or a control character. Each was written into the rc NeoMutt runs, where
+  a backtick runs a command.
+- A store's or project's `.sessionview` can no longer set
+  `user_mail_command`, the mail client the `✉ mail` row types in. Like
+  `agent_command`, it comes from the template and your home settings only.
+- The agent menu shows a pane's title as it is. A title holding `#{...}`
+  was expanded as a tmux format in the status line.
+- A `.sessionview` window whose `name` is not a string is skipped and
+  named. It stopped every tab from opening.
+- `sessionview session --print` names each key a store's or project's
+  `.sessionview` set and was ignored, and each window entry it skipped.
+- The [+] popup's shell command no longer carries the pane's directory; the
+  popup starts in it instead.
+- The installer never moves links that run a different checkout (a second
+  clone, a git worktree, a uv tool): it lists them, changes nothing and
+  exits 3. `--relink` moves them here on purpose. `make` with no target
+  prints the help; it used to install.
+- Resizing your terminal no longer undoes a sidebar drag. A resize that
+  changed only the height, or attaching a terminal, put back the width the
+  frame started with and remembered it as if you had dragged to it: drag
+  the sidebar to 50, change the height, and it went back to 34 for good.
+  The width you dragged to now stays.
+- A terminal width resize, with no drag, no longer now and then remembers a
+  wrong sidebar width. A redraw caught in the middle of the resize could
+  take the narrowed sidebar (14 columns, say) for a drag and save it, and
+  every later open came up at 14. The sidebar now goes back to your width
+  after the resize and saves nothing. If yours opens at a width you never
+  chose, drag it back once, or run `sessionview config unset width`.
+- `sessionview install --check` WARNs on each tool link that runs a
+  different checkout, dangling ones and files that are not links included,
+  so they show without an install. It still changes nothing, and a WARN
+  never changes its exit status.
+- The install replaces a tool's link that points at a directory. It used
+  to follow the link and write the new one inside that directory.
+- A verb given a flag with no value, a missing or surplus word, or a config word it does not know now refuses before it acts: a reason line, the usage, and exit 2. `usermail --socket` and `send` with no ADDRESS exit 2, not 1. `sidebar-toggle --frame` no longer dies. `config` no longer writes view.json before refusing an unknown word or the wrong number of words. `config --project`/`--store`/`--key` with no value are refused, not silently dropped. A dangling `--store` in `sessionview-messages` no longer swallows the next flag. autostart refuses a surplus positional.
+- The messages tab refuses a project or `--store` name that is `.`, `..`
+  or begins with `.` or `-`, exit 2, before it asks `message path`: a
+  `..` opened a maildir outside the agents tree. A window name from a
+  store's or project's `.sessionview` no longer carries a control
+  character to the terminal: ESC, DEL and the rest are dropped from the
+  notice that its command was ignored, from `sessionview-config windows`,
+  and so from the `sessionview-session --print` plan and the new-tab
+  picker. A name of control characters only is skipped as no name.
+
 ## [0.3.0] - 2026-10-24
 
 ### Added

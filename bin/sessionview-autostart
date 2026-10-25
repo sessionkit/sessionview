@@ -10,7 +10,7 @@
 # Opening sessionview can start the user's chosen agent. It is configurable,
 # and it never starts an agent without asking the first time; after that the
 # user can change the configuration if they want it to stop.
-#
+# (end of usage)
 # ONE config key, THREE states (`autostart_agent`, in the template, so there is
 # no hidden default):
 #
@@ -37,6 +37,30 @@
 # Fails OPEN, always: no config, no python, no session command, no tty - the
 # frame must open regardless. Nothing here is worth a black window.
 set -u
+# -h/--help: the usage above, and nothing else. An argument the
+# usage does not name refuses: exit 2, the usage on stderr. So does a flag
+# in a SOCK, SESSION or NAME slot, or after --fresh-window (NAME - is a
+# plain claude). All of it
+# before lib/python.sh (it runs Python) and before $1 is read as a socket
+# name (SOCK, below): `--version` once became `tmux -L --version`.
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+refuse() { echo "sessionview-autostart: unknown argument '$1'" >&2; usage >&2; exit 2; }
+words() { for a; do case "$a" in -*) refuse "$a";; esac; done; }
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  --status) words "${2-}" "${3-}"; [ $# -le 3 ] || refuse "$4";;
+  --start) case "${2:-}" in -?*) refuse "$2";; esac
+           words "${3-}" "${4-}"; [ $# -le 4 ] || refuse "$5";;
+  -*) refuse "$1";;
+  # SOCK SESSION, then nothing, an empty word, or --fresh-window W. A word
+  # after the empty third slot is one the grammar does not name.
+  *) words "${2-}" "${4-}"
+     case "${3-}" in
+       "") [ $# -le 3 ] || refuse "$4";;
+       --fresh-window) [ $# -le 4 ] || refuse "$5";;
+       *) refuse "$3";;
+     esac;;
+esac
 SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
 CFG="$SESSIONVIEW_ROOT/bin/sessionview-config"
 # The probe (lib/python.sh), never a bare python3: the one Python every tool

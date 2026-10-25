@@ -21,16 +21,18 @@
 # click (SESSIONVIEW_FRAME).
 set -u
 SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
-SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
 FRAME_SOCK="${SESSIONVIEW_FRAME_SOCK:-sessionview-frame}"
 SESSION="main"; SOCK="default"; WIDTH=""; GIVEN=""
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
 while [ $# -gt 0 ]; do case "$1" in
-  -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+  -h|--help) usage; exit 0;;
   --sock) SOCK="$2"; shift;;
   --width) WIDTH="$2"; shift;;
-  -*) echo "sessionview-frame: unknown flag $1" >&2; exit 2;;
+  -*) echo "sessionview-frame: unknown flag $1" >&2; usage >&2; exit 2;;
   *) SESSION="$1"; GIVEN=1;;
 esac; shift; done
+# The state dir and the Python only after the flags: -h touches nothing.
+SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
 # The frame takes over the terminal it runs in, so it needs one: a script or
 # an agent's shell (stdin/stdout not a tty) is refused and nothing is touched.
 # Every refusal is one line on stderr, exit 2.
@@ -85,7 +87,7 @@ PIN="$SESSIONVIEW_STATE/frame-$$.tty"
 export SESSIONVIEW_PIN="$PIN" SESSIONVIEW_FRAME="$FRAME_SOCK:$F" SESSIONVIEW_VIEW_SOCK="$SOCK"
 
 o() { "$TMUX_BIN" -L "$FRAME_SOCK" "$@"; }
-cleanup() { trap - HUP INT TERM EXIT; for h in client-attached client-resized client-detached; do o set-hook -gu "$h[$$]" 2>/dev/null; done; o kill-session -t "=$F" 2>/dev/null; rm -f "$PIN"; }
+cleanup() { trap - HUP INT TERM EXIT; for h in client-detached; do o set-hook -gu "$h[$$]" 2>/dev/null; done; o kill-session -t "=$F" 2>/dev/null; rm -f "$PIN"; }
 trap cleanup HUP INT TERM EXIT     # a closed terminal window must not leave the frame behind
 # the inner session must exist before a client can attach to it. FRESH records
 # whether THIS launch minted it: tmux always gives a new session one window
@@ -128,7 +130,33 @@ fi
 # needs a client-attached or client-resized to fire, which
 # is why a frame already up does not show it and a fresh launch always does.
 # A pane id is stable for the life of the pane; nothing renumbers it.
-SIDE="$(o new-session -d -P -F '#{pane_id}' -s "$F" -x "${COLUMNS:-200}" -y "${LINES:-50}" -e "SESSIONVIEW_PIN=$PIN" -e "SESSIONVIEW_PYTHON=${SESSIONVIEW_PYTHON:-}" -e "SESSIONVIEW_FRAME=$SESSIONVIEW_FRAME" -e "SESSIONVIEW_VIEW_SOCK=$SOCK" \
+#
+# The window is born at THIS terminal's size, the one that attaches below.
+# Born at a made-up width (200), the attach resized it, tmux scaled the
+# sidebar by half the change (34 became 14 in a 160-column terminal), and the
+# pane stayed that way until the sidebar's next render. Under load that is
+# seconds, and a border drag in that time was put back: fit() saw the window
+# change and read the drag as a terminal resize. Born at the terminal's size,
+# the attach changes nothing. `stty size` prints "rows cols" on a tty and
+# fails with none; then COLUMNS/LINES, then 200x50, as before.
+SZ="$(stty size 2>/dev/null || true)"; ROWS="${SZ% *}"; COLS="${SZ#* }"
+case "$ROWS:$COLS" in
+  :*|*:|*[!0-9:]*|0:*|*:0) ROWS="${LINES:-50}"; COLS="${COLUMNS:-200}";;
+esac
+# The sidebar's first fit() judges a drag against the last widths it knew,
+# and before its first render it knew none, so a drag made then was put back.
+# The frame hands it a starting record: the width the window is born at and
+# the width the sidebar pane is given below (tmux keeps at least 2 columns
+# for the border and the main pane). The sidebar reads it once, at start,
+# and its first fit() replaces it. It is never written to the pane and never
+# applied again: it is only what fit() compares the first reading with.
+SEED_PANE="$WIDTH"
+case "$COLS:$WIDTH" in
+  *[!0-9:]*|:*|*:) ;;
+  *) if [ "$WIDTH" -gt $((COLS - 2)) ]; then SEED_PANE=$((COLS - 2)); fi;;
+esac
+SIDE="$(o new-session -d -P -F '#{pane_id}' -s "$F" -x "$COLS" -y "$ROWS" -e "SESSIONVIEW_PIN=$PIN" -e "SESSIONVIEW_PYTHON=${SESSIONVIEW_PYTHON:-}" -e "SESSIONVIEW_FRAME=$SESSIONVIEW_FRAME" -e "SESSIONVIEW_VIEW_SOCK=$SOCK" \
+  -e "SESSIONVIEW_FIT_SEED=$COLS $SEED_PANE" \
   "exec \"$SESSIONVIEW_ROOT/bin/sessionview\" sidebar")"
 o set -t "$F" status off
 o set -t "$F" prefix None
@@ -161,13 +189,14 @@ MAIN="$(o split-window -h -P -F '#{pane_id}' -t "$SIDE" -e "TMUX=" \
 o set -t "$F" @sessionview_side_pane "$SIDE"
 o set -t "$F" @sessionview_main_pane "$MAIN"
 o resize-pane -t "$SIDE" -x "$WIDTH"
-# the sidebar keeps its width whatever the terminal does (the client's real
-# size lands at attach and on every resize; without this a smaller terminal
-# squeezed the sidebar to one column, measured)
-# client hooks are server-scoped: a session-scoped one never fired on resize
-# (measured: 120 -> 90 cols left the sidebar at 19). One array slot per
-# frame (indexed by pid) so frames do not overwrite each other's hook.
-o set-hook -g "client-attached[$$]" "resize-pane -t '$SIDE' -x $WIDTH"
+# From here the sidebar holds its own width: its fit() puts the wish back on
+# every terminal resize, and remembers a border drag as the new wish. It is
+# the ONE writer of that width. The frame once also held client-attached and
+# client-resized hooks that ran `resize-pane -x $WIDTH`, but $WIDTH is fixed
+# when the hook is set, at frame start. After a drag, a height-only resize
+# (the window width unchanged) put that old width back, and fit() read it as
+# a drag and remembered it over the user's (measured). So the frame
+# sets no resize hook; client-detached below stays, it is the lifeline.
 # a frame dies with its client even when the trap above never runs (the
 # terminal killed, the shell gone: a frame was once found alive with no
 # client). client-detached fires for a LOST client too, and the hook is
@@ -179,7 +208,6 @@ o set-hook -g "client-attached[$$]" "resize-pane -t '$SIDE' -x $WIDTH"
 # session on the next server loop.
 TTY="$(tty 2>/dev/null || echo none)"
 o set-hook -g "client-detached[$$]" "if -F '#{==:#{hook_client},$TTY}' 'kill-session -t =$F'"
-o set-hook -g "client-resized[$$]"  "resize-pane -t '$SIDE' -x $WIDTH"
 o select-pane -t "$MAIN"
 # pin = the client pane's tty: that is the client the sidebar may move
 o display-message -p -t "$MAIN" '#{pane_tty}' >"$PIN"

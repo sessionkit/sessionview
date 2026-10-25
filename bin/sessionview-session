@@ -65,7 +65,7 @@
 # --fresh says the caller booted it a moment ago. It refuses (exit 2) to
 # create a session named `store` and to start a down server: that is
 # `tm store boot`'s job. No recency line: a store is not a project.
-#
+# (end of usage)
 # REPO RESOLUTION, in order: `tm project get NAME`'s git url as ~/Code/<url
 # with : -> /> minus .git, when that dir exists; else the first git repo a
 # ~/Code/*/*/NAME glob finds; else one under `project_dirs` (below); else no
@@ -74,8 +74,9 @@
 # the picker's "most recently opened first".
 set -u
 SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
-SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
-usage() { sed -n '2,67p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# The usage, to the marker: on stdout for -h, on stderr for a refusal.
+usage_text() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { if [ "${1:-0}" = 0 ]; then usage_text; else usage_text >&2; fi; exit "${1:-0}"; }
 NAME=""; REPO=""; PLAIN="${SESSIONVIEW_PROFILE:-1}"; PRINT=0; WINDOW=""; LIST=0; STOREVIEW=""; FRESH=0
 # --socket: the tmux server the session is built on (a taskmaster store has
 # its own, tm-store-NAME); default = the server in $TMUX, else the plain one.
@@ -105,6 +106,8 @@ while [ $# -gt 0 ]; do case "$1" in
   -*) echo "sessionview-session: unknown flag $1" >&2; usage 2;;
   *) NAME="$1";;
 esac; shift; done
+# The state dir and the Python only after the flags: -h touches nothing.
+SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
 [ -n "$NAME" ] || { echo "sessionview-session: NAME required" >&2; usage 2; }
 [ "$PLAIN" = 0 ] && PLAIN=1 || PLAIN=0     # PLAIN=1 means: no profile
 
@@ -319,7 +322,15 @@ expand() {  # expand COMMAND [WINDOW] -> the line typed into it ("-" = none); si
   c="${c//\{store_project\}/$(printf %q "$STOREPROJ")}"; c="${c//\{store\}/$(printf %q "$STOREID")}"
   c="${c#"${c%%[![:space:]]*}"}"; c="${c%"${c##*[![:space:]]}"}"; printf '%s' "$c"
 }
-windows() { "$SESSIONVIEW_ROOT/bin/sessionview-config" windows --key "$WKEY" --store "$STORE" --project "$ROOT" 2>/dev/null; }
+# Under --print the config's stderr comes through: what a store or project
+# layer tried and was ignored, or an entry skipped, is named in the plan, the
+# place you look to see what a session will do. A real run and --list-windows
+# (the sidebar's call) stay quiet. cascade() above stays quiet even then: the
+# same layers are read here, so each notice is printed once, not twice.
+windows() {
+  if [ "$PRINT" = 1 ]; then "$SESSIONVIEW_ROOT/bin/sessionview-config" windows --key "$WKEY" --store "$STORE" --project "$ROOT"
+  else "$SESSIONVIEW_ROOT/bin/sessionview-config" windows --key "$WKEY" --store "$STORE" --project "$ROOT" 2>/dev/null; fi
+}
 # --nvim / code_nvim: the `editor` window opens by itself at session open and is
 # the one you land on. This once typed nvim into the REPO window, so with it
 # on, repo and editor were the same tab twice. repo is a shell, always.

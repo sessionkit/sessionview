@@ -23,6 +23,14 @@ inner one), no TMUX or TMUX_PANE, and a 160x45 pseudo-terminal as the
 client, the way a terminal window runs it. Teardown kills only those two
 servers (by their -L names, under that TMUX_TMPDIR) and the run's own
 process group. The default tmux server is never addressed.
+
+A drag must also survive the terminal being resized afterwards. The frame
+once held two resize hooks (client-attached, client-resized) that put back
+the width read at frame START. A height-only resize leaves the frame window's
+width alone, so fit() read the hook's resize as a drag and remembered the
+frame-start width over the user's. fit() is now the one writer of the
+sidebar width; the resize tests below drive the pty's size and hold it to
+that.
 """
 import fcntl
 import itertools
@@ -81,6 +89,28 @@ def forced_copy(dst):
         raise AssertionError(f"the frame's split/resize lines moved (found {did}): update forced_copy")
     with open(frame, "w") as f:
         f.write("\n".join(out))
+    return dst
+
+
+SIDEBAR_IMPORT = "import json, os, re, select, shlex, shutil, signal, subprocess, sys, termios, threading, time, tomllib, tty, unicodedata"
+
+
+def held_copy(dst, hold):
+    """Copy the checkout to DST with the sidebar held, before any of its
+    Python runs, for as long as the file HOLD exists. That is a slow first
+    render, made certain: no fit() runs before the attach, or before a drag
+    made while it is held. Returns DST. Fails the test if the anchor line
+    is gone."""
+    shutil.copytree(support.REPO, dst,
+                    ignore=shutil.ignore_patterns(".git", "__pycache__", ".venv"))
+    sb = os.path.join(dst, "bin", "tmux-sidebar")
+    with open(sb) as f:
+        s = f.read()
+    if s.count(SIDEBAR_IMPORT + "\n") != 1:
+        raise AssertionError("the sidebar's import line moved: update held_copy")
+    gate = f"import os as _o, time as _t\nwhile _o.path.exists({hold!r}):\n    _t.sleep(0.05)\n"
+    with open(sb, "w") as f:
+        f.write(s.replace(SIDEBAR_IMPORT + "\n", gate + SIDEBAR_IMPORT + "\n"))
     return dst
 
 
@@ -146,6 +176,29 @@ class FrameOpen:
             if not answered and b"Which" in self.out:   # the autostart question: no agent
                 answered = True
                 os.write(self.master, b"n\r")
+
+    def resize(self, cols, rows, timeout=10):
+        """Set the pty to COLS x ROWS (the kernel sends the client SIGWINCH)
+        and wait until the frame's client reports that size."""
+        fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        want, end = f"{cols}x{rows}", time.monotonic() + timeout
+        while time.monotonic() < end:
+            if want in self.tmux("list-clients", "-F", "#{client_width}x#{client_height}").stdout.split():
+                return
+            time.sleep(0.05)
+        raise AssertionError(f"the frame's client never reached {want}")
+
+    def watch(self, side, seconds=1.5):
+        """Sample (sidebar pane width, view.json width) every 0.1 s for
+        SECONDS. Returns every pair seen, in order, deduplicated."""
+        seen, end = [], time.monotonic() + seconds
+        while time.monotonic() < end:
+            pair = (self.tmux("display-message", "-p", "-t", side, "#{pane_width}").stdout.strip(),
+                    view_width(self.home))
+            if not seen or seen[-1] != pair:
+                seen.append(pair)
+            time.sleep(0.1)
+        return seen
 
     def frame_session(self):
         r = self.tmux("list-sessions", "-F", "#{session_name}")
@@ -220,6 +273,14 @@ class FirstOpenWidth(unittest.TestCase):
         fo.start()
         return fo
 
+    def drag(self, fo, side):
+        """Drag the border to DRAG_TO and wait until it is remembered."""
+        fo.tmux("resize-pane", "-t", side, "-x", str(DRAG_TO))
+        end = time.monotonic() + 10
+        while time.monotonic() < end and view_width(fo.home) != DRAG_TO:
+            time.sleep(0.1)
+        self.assertEqual(view_width(fo.home), DRAG_TO, "the drag was not remembered")
+
     def test_first_opens_keep_the_default_width(self):
         """The frame's own split and resize, before a client attaches, are
         not a drag: OPENS first opens, each on a fresh HOME, leave view.json
@@ -249,13 +310,85 @@ class FirstOpenWidth(unittest.TestCase):
         session = fo.wait_session()
         fo.settle()
         side = fo.side_pane(session)
-        fo.tmux("resize-pane", "-t", side, "-x", str(DRAG_TO))
-        end = time.monotonic() + 10
-        while time.monotonic() < end and view_width(fo.home) != DRAG_TO:
-            time.sleep(0.1)
-        self.assertEqual(view_width(fo.home), DRAG_TO, "the drag was not remembered")
+        self.drag(fo, side)
         pane = fo.tmux("display-message", "-p", "-t", side, "#{pane_width}").stdout.strip()
         self.assertEqual(pane, str(DRAG_TO), "the sidebar did not keep the dragged width")
+
+    def test_a_height_only_resize_keeps_the_drag(self):
+        """After a drag, a terminal resize that changes only the HEIGHT
+        leaves the sidebar, and view.json, at the dragged width. The frame's
+        old client-resized hook put the frame-start width back here, and
+        fit() remembered it as a drag (SV-195)."""
+        fo = self.open(support.REPO)
+        session = fo.wait_session()
+        fo.settle()
+        side = fo.side_pane(session)
+        self.drag(fo, side)
+        want = (str(DRAG_TO), DRAG_TO)
+        for rows in (30, ROWS):
+            fo.resize(COLS, rows)
+            seen = fo.watch(side)
+            self.assertEqual(seen, [want], f"after the height went to {rows}, the sidebar and "
+                                           f"view.json were not held at {DRAG_TO}: {seen}")
+
+    def test_a_width_resize_keeps_the_drag(self):
+        """After a drag, terminal WIDTH changes put the dragged width back:
+        fit() alone holds it, with no hook to help, and remembers nothing
+        new."""
+        fo = self.open(support.REPO)
+        session = fo.wait_session()
+        fo.settle()
+        side = fo.side_pane(session)
+        self.drag(fo, side)
+        for cols in (120, COLS):
+            fo.resize(cols, ROWS)
+            seen = fo.watch(side)
+            self.assertEqual(seen[-1], (str(DRAG_TO), DRAG_TO),
+                             f"after the width went to {cols}, the sidebar and view.json "
+                             f"did not settle at {DRAG_TO}: {seen}")
+            self.assertEqual({v for _, v in seen}, {DRAG_TO},
+                             f"after the width went to {cols}, view.json left {DRAG_TO}: {seen}")
+
+    def test_a_slow_first_render_shows_the_wish_and_keeps_an_early_drag(self):
+        """The sidebar's first render is slow (held here until a file is
+        removed), so no fit() runs before the client attaches or before the
+        drag. Right after the attach the frame's window is the terminal's
+        width and the sidebar pane is the wish: the window was once born 200
+        wide, the attach scaled the pane to 14, and it stayed there until the
+        sidebar drew. A drag made in that time is kept when the sidebar
+        starts: it was once put back, because the first fit() had nothing to
+        judge it against, or a window width from before the attach."""
+        copy = tempfile.mkdtemp(prefix="sv-test-fw-root-")
+        self.addCleanup(shutil.rmtree, copy, True)
+        hold = os.path.join(copy, "hold")
+        open(hold, "w").close()
+        self.addCleanup(lambda: os.path.exists(hold) and os.remove(hold))
+        fo = self.open(held_copy(os.path.join(copy, "root"), hold))
+        session = fo.wait_session()
+        end = time.monotonic() + 30
+        while time.monotonic() < end and not fo.tmux("list-clients").stdout.strip():
+            time.sleep(0.05)
+        self.assertTrue(fo.tmux("list-clients").stdout.strip(), "no client attached")
+        side = fo.side_pane(session)
+        seen, end = [], time.monotonic() + 1.0
+        while time.monotonic() < end:
+            pair = fo.tmux("display-message", "-p", "-t", side,
+                           "#{window_width} #{pane_width}").stdout.strip()
+            if not seen or seen[-1] != pair:
+                seen.append(pair)
+            time.sleep(0.1)
+        self.assertEqual(seen, [f"{COLS} {DEFAULT_WIDTH}"],
+                         "after the attach, with no sidebar render, the window was not the "
+                         f"terminal's width or the sidebar not {DEFAULT_WIDTH}: {seen}")
+        fo.tmux("resize-pane", "-t", side, "-x", str(DRAG_TO))
+        time.sleep(0.3)
+        os.remove(hold)
+        end = time.monotonic() + 15
+        while time.monotonic() < end and view_width(fo.home) != DRAG_TO:
+            time.sleep(0.1)
+        seen = fo.watch(side)
+        self.assertEqual(seen, [(str(DRAG_TO), DRAG_TO)],
+                         f"a drag made before the sidebar's first render was not kept: {seen}")
 
 
 if __name__ == "__main__":

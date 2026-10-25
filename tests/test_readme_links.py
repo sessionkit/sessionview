@@ -25,10 +25,13 @@ definitions [id]: target, in README.md and each docs/*.md.
   keeps its own URL.
 
 BranchGate reads every tracked file (tests included) for the same rules: no
-kit URL that names a branch, no full URL to this repository, and no
-instruction to check out a branch other than master, the only branch the kit's
-repositories have. Its patterns are built from parts, so this file does not
-trip it.
+kit URL that names a branch (a raw.githubusercontent.com URL included), no full
+URL to this repository, and no instruction that names the host's usual default
+branch, which the kit's repositories do not have (master is their only branch):
+cloning it (-b, --branch), checking it out or switching to it (git checkout,
+git switch), pushing to it (git push <remote> <it>, or <ref>:<it>) or naming
+origin/<it>. Another branch name in an instruction is not a hit. Its patterns
+are built from parts, so this file does not trip it.
 """
 import os
 import re
@@ -69,21 +72,33 @@ OTHER = "ma" + "in"
 
 #: The kit's owner on the repository host, in a URL.
 HOST = r"github\.com/sessionkit/"
+#: The kit's owner on the host's raw-file server: /<repo>/<ref>/<path>.
+RAW_HOST = r"raw\.githubusercontent\.com/sessionkit/"
 #: The end of a branch name: no name character follows, nor a dot that
 #: carries the name on (origin/X..HEAD and "on X." end it; X.old does not).
 END = r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9_])"
 
 #: A full URL to a file or directory of this repository.
-SELF_URL = re.compile(HOST + r"sessionview/(blob|tree|raw)/")
+SELF_URL = re.compile(HOST + r"sessionview/(blob|tree|raw)/|" + RAW_HOST + r"sessionview/")
 
 #: A URL to a file or directory of a sessionkit repository: group 1 is the
 #: repository, group 2 the ref (up to the next /, space, quote or bracket).
 KIT_URL = re.compile(HOST + r"([A-Za-z0-9_.-]+)/(?:blob|tree|raw)/([^/\s)>\]\"'#?]*)")
+#: The same on the raw-file server, where the ref follows the repository.
+RAW_URL = re.compile(RAW_HOST + r"([A-Za-z0-9_.-]+)/([^/\s)>\]\"'#?]*)")
 
+#: The start of a word: no name character before it.
+WORD = r"(?<![A-Za-z0-9_-])"
+#: Flags between a git verb and its arguments: -c, --track, -u.
+FLAGS = r"(?:[ \t]+-\S+)*"
 #: A branch instruction naming the other branch: -b X, --branch X or
-#: --branch=X, and origin/X.
-OTHER_BRANCH = re.compile(r"(?<![A-Za-z0-9_-])(-b|--branch)(=|[ \t]+)" + OTHER + END
-                          + r"|(?<![A-Za-z0-9_-])origin/" + OTHER + END)
+#: --branch=X; git checkout X and git switch X (flags allowed between); git
+#: push <remote> X and git push <remote> <ref>:X; and origin/X.
+OTHER_BRANCH = re.compile(WORD + r"(-b|--branch)(=|[ \t]+)" + OTHER + END
+                          + "|" + WORD + r"git[ \t]+(checkout|switch)" + FLAGS + r"[ \t]+" + OTHER + END
+                          + "|" + WORD + r"git[ \t]+push" + FLAGS + r"[ \t]+[^\s-]\S*[ \t]+(\S*:)?"
+                          + OTHER + END
+                          + "|" + WORD + r"origin/" + OTHER + END)
 
 #: A kit repository under the old owner; another repository there is fine.
 OLD_OWNER_KIT = re.compile(r"github\.com/mbailey/(%s)(?![A-Za-z0-9_-])" % "|".join(KIT))
@@ -123,10 +138,12 @@ def allowed_ref(ref):
 
 
 def kit_branches(text):
-    """[(line, url)] for each kit URL that names a ref other than HEAD or a v* tag:
-    a branch, master included, or a commit."""
-    return [(line_of(text, m.start()), m.group(0)) for m in KIT_URL.finditer(text)
-            if not allowed_ref(m.group(2))]
+    """[(line, url)] for each kit URL (github.com or raw.githubusercontent.com)
+    that names a ref other than HEAD or a v* tag: a branch, master included, or
+    a commit."""
+    return sorted((line_of(text, m.start()), m.group(0))
+                  for rx in (KIT_URL, RAW_URL) for m in rx.finditer(text)
+                  if not allowed_ref(m.group(2)))
 
 
 def old_owner(text):
@@ -392,6 +409,7 @@ class BranchGate(unittest.TestCase):
 
     def test_pattern(self):
         host = "https://" + HOST.replace("\\", "")
+        raw = "https://" + RAW_HOST.replace("\\", "")
         for text in (host + "sessionmail/blob/" + OTHER + "/README.md",
                      host + "sessionkit/tree/" + OTHER,
                      host + "sessionphone/raw/" + OTHER + "/x.sh",
@@ -406,7 +424,21 @@ class BranchGate(unittest.TestCase):
                      "git clone --branch=" + OTHER + " url",
                      "git rebase origin/" + OTHER,
                      "git diff origin/" + OTHER + "..HEAD",
-                     "see " + host + "sessionmail/tree/" + OTHER + "."):
+                     "see " + host + "sessionmail/tree/" + OTHER + ".",
+                     "git checkout " + OTHER,
+                     "git switch " + OTHER,
+                     "git switch -c " + OTHER,
+                     "git checkout --track " + OTHER,
+                     "  then `git switch " + OTHER + "`.",
+                     "git push origin " + OTHER,
+                     "git push -u origin " + OTHER,
+                     "git push origin HEAD:" + OTHER,
+                     "git push origin " + OTHER + " && git push origin refs/tags/v1.2.3",
+                     "git push upstream " + OTHER,
+                     raw + "sessionmail/" + OTHER + "/install.sh",
+                     raw + "sessionkit/" + BRANCH + "/install.sh",
+                     raw + "sessionkit/develop/x",
+                     raw + "sessionview/" + REF + "/install.sh"):
             with self.subTest(text=text):
                 self.assertTrue(gate_hits(text))
         for text in (host + "sessionmail/blob/" + REF + "/README.md",
@@ -422,7 +454,22 @@ class BranchGate(unittest.TestCase):
                      "git rebase origin/" + OTHER + ".old",
                      "def " + OTHER + "():",
                      '"' + OTHER + '" if has("refs/heads/' + OTHER + '") else "' + BRANCH + '"',
-                     "status --porcelain=v2 --branch"):
+                     "status --porcelain=v2 --branch",
+                     "git checkout " + BRANCH,
+                     "git switch " + BRANCH,
+                     "git checkout " + OTHER + "-old",
+                     "git switch release-" + OTHER,
+                     "git checkout -- " + OTHER + ".py",
+                     "git push origin " + BRANCH,
+                     "git push origin rel-branch",
+                     "git push origin " + OTHER + "-old",
+                     'git push origin "$$branch" && git push origin "refs/tags/$$tag"',
+                     "git push origin {branch} && git push origin refs/tags/{tag}",
+                     "git push origin refs/tags/v1.2.3",
+                     'self.git("init", "-q", "-b", "' + BRANCH + '")',
+                     raw + "sessionkit/" + REF + "/install.sh",
+                     raw + "sessionmail/v0.2.0/install.sh",
+                     "https://raw.githubusercontent.com/other/tool/" + OTHER + "/x.sh"):
             with self.subTest(text=text):
                 self.assertEqual(gate_hits(text), [])
 

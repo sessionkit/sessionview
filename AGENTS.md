@@ -37,15 +37,21 @@ the spec in the same commit.
 Needs Python 3.11 to 3.14 and tmux 3.x. The package is stdlib only,
 with no Python dependencies.
 
-    make test      # the suite, about 90 s
-    make check     # what this machine has and lacks
-    make install   # install the commands
-    make app       # the macOS Dock app
-    make scan      # pre-publish leak check (needs SESSIONKIT_SCAN)
-    make build     # wheel + sdist into dist/ (needs uv)
-    make release   # BUMP=patch|minor|major or VERSION=X.Y.Z: bump, commit, tag
-    make push      # push the branch and the tags (release never pushes)
-    make publish   # upload this version to PyPI; the token never on a command line
+- `make help` lists the targets and changes nothing. It is the default
+  goal.
+- `make test` runs the suite, in about 90 s.
+- `make check` says what this machine has and lacks.
+- `make install` installs the commands.
+- `make app` builds the macOS Dock app.
+- `make scan` is the pre-publish leak check. It needs `SESSIONKIT_SCAN`.
+- `make build` puts a wheel and an sdist into the dist folder. It needs uv.
+- `make release` bumps the version, commits and tags. It bumps the patch
+  number unless you say otherwise: `make release BUMP=minor` (or
+  `BUMP=major`), or `make release VERSION=X.Y.Z` to set it.
+- `make push` pushes the branch and the tags. `make release` never
+  pushes.
+- `make publish` uploads this version to PyPI. The token is never on a
+  command line.
 
 Stock macOS puts Python 3.9 first on PATH. `make test` finds a newer
 one; to choose, `make test PYTHON=/path/to/python3`.
@@ -59,11 +65,22 @@ plan without changing anything.
 
 ## Rules
 
+- Never run `make install` (or `bin/sessionview-install`) from a worktree
+  or a scratch clone without `PREFIX` set to a scratch dir: it links into
+  the real `~/.local/bin`. Always name the make target; never use a bare
+  `make`.
+
 - Tests never touch real state. Run each in a scratch HOME
   (`scratch_env` in `tests/support.py`) and pass the session dir (`-c`). Without
   them a test reads the real home settings
   (`~/.sessionkit/view/settings/view.json`), and a walk-up from the checkout
   looking for `.sessionview` reads a real store or project layer.
+- A shell line in the docs carries no `#` comment, trailing or on its
+  own line: put the explanation in the prose around the block. In zsh,
+  the macOS shell, `#` typed at the prompt is an ordinary word
+  (`interactivecomments` is off), so a pasted comment reaches the command
+  as arguments, and a `|` or `;` in it runs the rest as commands.
+  `tests/test_doc_shell_comments.py` fails on one.
 - Do not bind `^O`. On macOS it never reaches a cbreak-mode TUI (the
   terminal driver eats it as VDISCARD).
 - This repo is public. No personal names, hostnames, internal tools or

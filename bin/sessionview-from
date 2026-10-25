@@ -16,6 +16,11 @@
 # Set one of the first four when your login name is not your mail name:
 #   sessionview-config set mail_from NAME
 set -euo pipefail
+# -h/--help: the header above, and nothing else; no config is read.
+# It takes no argument: any other refuses, exit 2, the usage on stderr.
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+case "${1:-}" in -h|--help) usage; exit 0;; esac
+[ $# -eq 0 ] || { echo "sessionview-from: unknown argument '$1'" >&2; usage >&2; exit 2; }
 
 here="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
 

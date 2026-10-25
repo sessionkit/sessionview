@@ -6,7 +6,7 @@
 #   sessionview sidebar-toggle --hide | --show  one direction only (default: toggle)
 #   sessionview sidebar-toggle --frame SOCK:SESSION   name the frame (tests, the sidebar)
 #   sessionview sidebar-toggle --tty /dev/ttysNNN    the clicking client (the tab-bar glyph)
-#
+# (end of usage)
 # The tab-bar glyph and the tmux bindings run this file by path
 # ($SESSIONVIEW_ROOT/bin/sessionview-sidebar-toggle); from a shell, the
 # `sessionview` front door runs it, so it works from a package install too.
@@ -30,14 +30,20 @@
 set -eu
 FSOCK="${SESSIONVIEW_FRAME_SOCK:-sessionview-frame}"
 FRAME=""; MODE="toggle"; TTY=""
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --frame) FRAME="$2"; shift 2;;
-    --tty)   TTY="$2"; shift 2;;          # the clicking client's tty, from the tab-bar binding
+    # A flag with no value after it refuses like an unknown one. An EMPTY
+    # value is not missing: the tab-bar binding passes `--tty ''` when tmux
+    # has no client tty, and that falls back to this shell's own client.
+    --frame) [ $# -ge 2 ] || { echo "sessionview-sidebar-toggle: $1 needs a value" >&2; usage >&2; exit 2; }
+             FRAME="$2"; shift 2;;
+    --tty)   [ $# -ge 2 ] || { echo "sessionview-sidebar-toggle: $1 needs a value" >&2; usage >&2; exit 2; }
+             TTY="$2"; shift 2;;          # the clicking client's tty, from the tab-bar binding
     --hide)  MODE="hide"; shift;;
     --show)  MODE="show"; shift;;
-    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
-    *) echo "sessionview-sidebar-toggle: unknown argument '$1'" >&2; exit 2;;
+    -h|--help) usage; exit 0;;
+    *) echo "sessionview-sidebar-toggle: unknown argument '$1'" >&2; usage >&2; exit 2;;
   esac
 done
 if [ -n "$FRAME" ]; then

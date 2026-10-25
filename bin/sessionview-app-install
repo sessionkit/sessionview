@@ -13,6 +13,15 @@
 # The app is a FRONT DOOR, not the product: it opens a terminal and runs
 # `sessionview` in it. `sessionview` in any shell does the same job.
 set -u
+# -h/--help: the header above. Any argument but --check refuses, exit 2, the
+# usage on stderr, before anything is built.
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+refuse() { echo "sessionview-app-install: unknown argument '$1'" >&2; usage >&2; exit 2; }
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  ""|--check) [ $# -le 1 ] || refuse "$2";;
+  *) refuse "$1";;
+esac
 ROOT="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
 SRC="$ROOT/macos/SessionView.applescript"
 ICON="$ROOT/macos/dreamcatcher.icns"

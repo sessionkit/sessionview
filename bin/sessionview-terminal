@@ -21,6 +21,14 @@
 # fix is not a better guess; it is asking, once,
 # and keeping the answer where the rest of the config lives.
 set -u
+# -h/--help: the header above, and nothing else; no config, no pgrep.
+# Any argument but --why refuses, exit 2, the usage on stderr.
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  ""|--why) [ $# -le 1 ] || { echo "sessionview-terminal: unknown argument '$2'" >&2; usage >&2; exit 2; };;
+  *) echo "sessionview-terminal: unknown argument '$1'" >&2; usage >&2; exit 2;;
+esac
 SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
 ANSWER=""; WHY=""
 pick="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get terminal 2>/dev/null || true)"

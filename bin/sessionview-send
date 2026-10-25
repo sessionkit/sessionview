@@ -13,8 +13,16 @@
 # `message` is looked up on PATH, then ~/.local/bin/message: a tmux server's
 # PATH may predate the install.
 set -euo pipefail
-
-[ $# -ge 1 ] || { echo "usage: sessionview-send ADDRESS [message-send args...]" >&2; exit 1; }
+# -h/--help: the header above. An ADDRESS that starts with - is a flag this
+# does not know: it refuses, exit 2, the usage on stderr. So does no ADDRESS,
+# or an empty one: nothing can be sent to it. What follows ADDRESS is
+# `message send`'s, and it checks its own flags.
+usage() { sed -n '/^# (end of usage)$/q;/^[^#]/q;2,$p' "$0" | sed 's/^# \{0,1\}//'; }
+case "${1:-}" in
+  "") echo "sessionview-send: ADDRESS required" >&2; usage >&2; exit 2;;
+  -h|--help) usage; exit 0;;
+  -*) echo "sessionview-send: unknown argument '$1'" >&2; usage >&2; exit 2;;
+esac
 
 here="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
 from="$("$here/sessionview-from")"

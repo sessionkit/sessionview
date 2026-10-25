@@ -80,11 +80,11 @@ class RetiredSessionRepo(unittest.TestCase):
             m = tomllib.load(f)
         self.assertIn("session", m["requires"])
         self.assertIn("message", [a["id"] for a in m["actions"]])
-        readme = read(os.path.join(support.REPO, "README.md"))
-        bullet = readme[readme.index("optional: **`session`**"):]
-        bullet = bullet[:bullet.index("\n- ")]
-        self.assertNotIn("unaffected", bullet)
-        self.assertIn("Message", bullet)
+        # The list lives in docs/dependencies.md: sessiontools' row there.
+        page = read(os.path.join(support.REPO, "docs", "dependencies.md"))
+        row = next(l for l in page.splitlines() if l.startswith("| [sessiontools]"))
+        self.assertNotIn("unaffected", row)
+        self.assertIn("Message", row)
 
 
 class Installer(unittest.TestCase):
