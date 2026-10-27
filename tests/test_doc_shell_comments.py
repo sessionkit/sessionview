@@ -11,7 +11,8 @@ no better: zsh runs `#` as a command. So the explanation goes in the prose
 around the block, never in the block.
 
 Checked: every Markdown file in the checkout except CHANGELOG.md (it records
-what was, and is not pasted). Its shell lines are the lines of each indented
+what was, and is not pasted) and the fragments in changelog.d/ (CHANGELOG
+text not collated yet; changelog.d/README.md is checked). Its shell lines are the lines of each indented
 code block, and of each fenced block with no info string or a shell one
 (bash, sh, zsh, shell, console). A `text` or other fenced block is not
 pasted, so it is not checked. A hit is a `#` that stands as its own word: a
@@ -21,7 +22,7 @@ import os
 import re
 import unittest
 
-from tests import support
+from tests import _changelog, support
 
 #: Not checked: the changelog keeps the record as it was written.
 SKIP_FILES = {"CHANGELOG.md"}
@@ -42,13 +43,14 @@ FENCE = re.compile(r"^\s{0,3}(```+|~~~+)\s*([^\s`]*)")
 
 
 def doc_files():
-    """Every .md under the checkout, CHANGELOG.md excepted; a directory whose
-    name starts with a dot (.git, a virtualenv) is not walked."""
+    """Every .md under the checkout, CHANGELOG.md and its fragments excepted; a
+    directory whose name starts with a dot (.git, a virtualenv) is not walked."""
     out = []
     for root, dirs, files in os.walk(support.REPO):
         dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__pycache__")
         out += [os.path.join(root, n) for n in sorted(files)
-                if n.endswith(".md") and n not in SKIP_FILES]
+                if n.endswith(".md") and n not in SKIP_FILES
+                and not _changelog.is_fragment(os.path.relpath(os.path.join(root, n), support.REPO))]
     return out
 
 
@@ -106,6 +108,9 @@ class DocShellComments(unittest.TestCase):
                      os.path.join("skills", "sessionview", "SKILL.md")):
             self.assertIn(name, names)
         self.assertNotIn("CHANGELOG.md", names)
+        # The fragments are CHANGELOG text, exempt the same way; their README is a doc.
+        self.assertIn(os.path.join("changelog.d", "README.md"), names)
+        self.assertFalse([n for n in names if _changelog.is_fragment(n)], names)
         readme = [line.strip() for _, line in shell_lines(read(os.path.join(support.REPO, "README.md")))]
         for start in ("uv tool install sessionview", "sessionview install"):
             self.assertTrue(any(line.startswith(start) for line in readme), start)

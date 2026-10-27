@@ -24,7 +24,7 @@ import subprocess
 import sys
 import unittest
 
-from tests import support
+from tests import _changelog, support
 
 SIDEBAR = os.path.join(support.BIN, "tmux-sidebar")
 SENTINEL = "old-home-value-never-read"
@@ -373,14 +373,15 @@ class OneDefinition(unittest.TestCase):
     def test_the_docs_name_the_old_home_once(self):
         """Every doc points at "Upgrading from 0.1.0" in docs/configuration.md,
         which names the old folder on one line, its move's first. CHANGELOG.md
-        is history and is left out."""
+        is history and is left out, and so are its fragments in changelog.d/
+        (history not collated yet); changelog.d/README.md is read."""
         rx = re.compile(r"~/\.sessionview|HOME/\.sessionview|\.sessionview/(config\.json|neomuttrc)")
         out = {}
         for d, subdirs, files in os.walk(support.REPO):
             subdirs[:] = sorted(n for n in subdirs if not n.startswith(".") and n != "tests")
             for n in sorted(files):
                 rel = os.path.relpath(os.path.join(d, n), support.REPO)
-                if not n.endswith(".md") or rel == "CHANGELOG.md":
+                if not n.endswith(".md") or rel == "CHANGELOG.md" or _changelog.is_fragment(rel):
                     continue
                 with open(os.path.join(d, n), encoding="utf-8") as f:
                     hits = [line.strip() for line in f if rx.search(line)]

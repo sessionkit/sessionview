@@ -3,8 +3,8 @@
 `sessionview` puts a sidebar beside tmux, in the terminal you run it in:
 your projects (tmux sessions) above, your agents below, here and on remote
 hosts. A click goes there; a right-click opens that row's menu. Bare
-`sessionview` opens the frame: the sidebar on the left and the session
-`main` on the right. Every other word is a verb.
+`sessionview` opens the frame: the sidebar on the left and a tmux
+session on the right. Every other word is a verb.
 
 - `sessionview --help` lists the verbs.
 - `sessionview VERB --help` has each verb's form. Asking never acts: no
@@ -40,10 +40,13 @@ sessionview
 
 ## Each verb's form
 
-- `sessionview [SESSION] [--sock SERVER] [--width N]`: SESSION is `main`
-  when you name none, and the frame makes `main` if it is not there. A
-  SESSION you name must already exist. `--sock` names the tmux server
-  SESSION is on. `--width` sets the sidebar's starting columns in place
+- `sessionview [SESSION] [--sock SERVER] [--width N]`: with no SESSION,
+  the frame lands in a session the server already has. It picks the
+  session holding your default assistant (`session agent default`), else
+  the one attached most recently, else the newest. Only when the server
+  has no session at all does it make one, named `main`. Run inside tmux,
+  it uses the session you are in. A SESSION you name must already exist.
+  `--sock` names the tmux server SESSION is on. `--width` sets the sidebar's starting columns in place
   of your `width` setting, and writes nothing.
   - To make a new session: `sessionview session NAME`.
 - `sessionview config [VERB]`: with no verb, the settings screen (it
@@ -68,7 +71,13 @@ sessionview
   MISSING. What each of these puts on your Mac: [what an install
   changes][changes].
 - `sessionview autostart --status`: the decision, and nothing done. The
-  first open asks which agent to start, once. `--start NAME` starts NAME
+  first open asks which agent to start, once: *sessionview can start an
+  agent for you each time it opens*, a numbered list of your agents, then
+  `Which? (number, name, or "n")`. When the list cannot be had, it asks
+  `Which agent? (a name, or "no" to never ask again)`. A number or a name
+  starts that agent each time sessionview opens; `n`, `no` or Enter means
+  never. It asks only at a terminal, and remembers the answer in
+  `autostart_agent`, which Settings changes. `--start NAME` starts NAME
   now, which is what the `+` under agents does.
 - `sessionview terminal [--why]`: one word, `iterm`, `ghostty` or
   `terminal`. Your `terminal` setting first, then a terminal running

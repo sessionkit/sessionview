@@ -6,10 +6,10 @@ upgrade it. The README's [requirements][readme-requirements] link here.
 
 The full resolved set, every package at the version this repo is tested with, is in [`uv.lock`][uv-lock].
 
-- **Required:** macOS, Python 3.11 to 3.14 (standard library only), and
-  neomutt. sessionview has no Python package dependencies.
-- **Optional:** sessionmail, sessiontools, taskmaster, Claude Code, uv, git,
-  lazygit, an editor, and a few tools single features use.
+- **Required:** macOS and Python 3.11 to 3.14 (standard library only).
+  sessionview has no Python package dependencies.
+- **Optional:** sessionmail, neomutt, sessiontools, taskmaster, Claude Code,
+  uv, git, lazygit, an editor, and a few tools single features use.
 - **Pending a ruling:** Homebrew, tmux, notmuch and ffmpeg. Whether the
   family requires them is not decided yet; their entries say what uses each
   one today ([pending a ruling][pending]).
@@ -46,13 +46,13 @@ else.
 |---|---|---|---|
 | macOS | Everything. Tested on macOS 27 on Apple silicon. The dock app and the menu's Copy are macOS only; the sidebar and the frame are tmux and Python and should run on Linux, untested. | Your Mac. | Software Update. |
 | Python 3.11 to 3.14 | The sidebar and the config tools (`sessionview-config`, the settings screen). Standard library only. Without one, the check says MISSING; macOS ships 3.9. | `uv tool install sessionview` brings its own and every command uses it. From a checkout: `uv python install 3.14`, or `brew install python@3.14`. | With the package: `uv tool upgrade sessionview`. Otherwise the way you installed it. |
-| [neomutt][neomutt] | The `messages` tab, which a project session opens by default when the project has a mailbox: `sessionview-messages` runs `neomutt -R`, read-only. Without it the tab opens and its command exits 2, "no neomutt on PATH", and `sessionview install --check` says MISSING and not ready. Also the sidebar's `✉ mail` row, which falls back to `mutt`. | `brew install neomutt`, which is built with notmuch, as the tab's sidebar needs; or your package manager's, built with notmuch. | `brew upgrade neomutt`, or the way you installed it. |
 
 ## Optional
 
 | Dependency | What needs it | Without it | How you get it | How you upgrade it |
 |---|---|---|---|---|
 | [sessionmail][pkg-mail] (`message`) | Every mail action: the agent menu's Message, Continue, Settle and Speak, the agent pane menu, and the session, taskmaster and voicemode plugins, which each list `message` in their `requires`. The `messages` tab finds its folder with `message path`. | The mail items are hidden and no `messages` tab is made. Run by hand, `sessionview-messages` exits 2, "no `message` on PATH". | `uv tool install sessionmail`. | `uv tool upgrade sessionmail`. |
+| [neomutt][neomutt] | The `messages` tab: `sessionview-messages` runs `neomutt -R`, read-only. sessionview makes that tab only when sessionmail is installed, and then opens it by default when the project has a mailbox. Also the sidebar's `✉ mail` row, which falls back to `mutt`. | The check says WARN and still says ready. The tab opens and its command exits 2, "no neomutt on PATH". Without sessionmail there is no tab to need it. | `brew install neomutt`, which is built with notmuch, as the tab's sidebar needs; or your package manager's, built with notmuch. | `brew upgrade neomutt`, or the way you installed it. |
 | [sessiontools][pkg-tools] (`session`) | Agent rows, Start an agent, and the agent menu (`session list`, `session start`). | The check says WARN. The sidebar lists projects (tmux sessions) but no agent rows, so no agent menu (Message, Continue, Settle, ...) and no Start an agent. `message` itself still works from a shell. | `uv tool install sessiontools`. | `uv tool upgrade sessiontools`. |
 | taskmaster (`tm`) | The store row and Switch store (`tm store list`), the new-session picker's projects (`tm project list`), the taskmaster menu items, and a store's `tasks` tab. A project's `tasks` tab, offered but not opened by default, runs a `tasks` command of your own. | No store row, the picker offers no projects, and the taskmaster items are hidden. The sidebar still lists your tmux sessions. | Its own install. | Its own upgrade. |
 | [Claude Code][claude-code] | The plugin and its skills; the voicemode plugin's Speak item, shown only when that plugin is installed. | No skills. The sidebar runs without it. | Its installer. | Claude Code's own update. |

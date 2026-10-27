@@ -11,7 +11,11 @@ without anyone touching the README:
 - each file the sidebar writes in the state folder is named;
 - sessionview writes no launchd service, as the section says;
 - `## Uninstall` comes right after the section, and its commands name the
-  plugin and the package by the names the manifests give them.
+  plugin and the package by the names the manifests give them;
+- the folders it names, and the ones the uninstall removes, are the state
+  and log folders lib/state.sh makes, and the old state folder an upgrade
+  leaves behind; no line names ~/Library/Logs, which sessionview never
+  writes to.
 """
 import glob
 import json
@@ -20,10 +24,11 @@ import re
 import tomllib
 import unittest
 
-from tests import support
+from tests import _changelog, support
 
 README = os.path.join(support.REPO, "README.md")
 SIDEBAR = os.path.join(support.BIN, "tmux-sidebar")
+STATE_SH = os.path.join(support.REPO, "lib", "state.sh")
 PLUGIN_DIR = os.path.join(support.REPO, ".claude-plugin")
 
 #: state("NAME") or state(f"NAME") in the sidebar. frame.tty is only READ
@@ -54,6 +59,19 @@ def section(text, heading):
             break
         out.append(line)
     return "\n".join(out)
+
+
+def state_sh_dirs():
+    """The new state dir, the log dir and the old state dir, as lib/state.sh
+    names them under $HOME (read from it, so these tests hold no copy)."""
+    text = read(STATE_SH)
+    found = {}
+    for var in ("_sv_n", "_sv_ld", "_sv_o"):
+        m = re.search(r'^\s*' + var + r'="\$HOME(/[^"$]+)"$', text, re.M)
+        if not m:
+            raise AssertionError(f"lib/state.sh sets no {var}=\"$HOME/...\"")
+        found[var] = m.group(1)
+    return found["_sv_n"], found["_sv_ld"], found["_sv_o"]
 
 
 def bullet(body, label):
@@ -130,6 +148,26 @@ class WhatAnInstallChanges(unittest.TestCase):
         with open(os.path.join(support.REPO, "pyproject.toml"), "rb") as f:
             package = tomllib.load(f)["project"]["name"]
         self.assertIn(f"uv tool uninstall {package}", body)
+
+    def test_folders_name_the_state_and_log_dirs(self):
+        folders = bullet(self.body, "Folders")
+        for d in state_sh_dirs():
+            self.assertIn(f"`~{d}/`", folders, d)
+
+    def test_uninstall_removes_both_new_dirs_and_the_old_one(self):
+        body = section(self.readme, "Uninstall")
+        for d in state_sh_dirs():
+            self.assertIn(f'"${{HOME:?}}{d}"', body, d)
+
+    def test_no_line_names_library_logs(self):
+        # An absence guard: CHANGELOG.md and every pending fragment (_changelog.paths).
+        docs = [README, os.path.join(support.REPO, "SPEC.md"), *map(str, _changelog.paths())]
+        for pattern in ("docs/*.md", "config/*", "skills/*/SKILL.md", "skills/*/references/*.md"):
+            docs += glob.glob(os.path.join(support.REPO, pattern))
+        self.assertGreater(len(docs), 5)
+        for p in docs:
+            if os.path.isfile(p):
+                self.assertNotIn("Library/Logs", read(p), p)
 
 
 if __name__ == "__main__":

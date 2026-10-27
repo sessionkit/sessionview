@@ -6,7 +6,112 @@ All notable changes to sessionview are documented here. The format is
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Changes since the last release are in `changelog.d/`, one file each, not
+in this file; `changelog.d/README.md` says how to write one.
+`make changelog` prints them as the next release will write them. The
+release moves them in here, under the new version.
+
 ## [Unreleased]
+
+## [0.3.2] - 2026-10-28
+
+### Added
+
+- An idle agent's row shows how many minutes it has sat idle, just left of
+  its context %, as `34m`. Only an idle agent shows a time: one that is
+  busy, waiting or blocked shows nothing, however long it has been so. The
+  time is dim grey at first, turns orange and bold at 45 minutes and red
+  and bold at 60. Three settings, in minutes, move those points:
+  `agent_idle_orange`, `agent_idle_red`, and `agent_idle_blink`, which
+  makes the time blink from that minute on. Blinking is off (`0`) by
+  default. The time takes the same four columns on every row, so the
+  context % stays lined up on the right. The new field is `{idle_m}`, and
+  the default `agent_format` now carries it. A settings file made by an
+  earlier version keeps its own `agent_format`: to see the time, put
+  `{idle_m} ` before `{ctx}` in it, or run
+  `sessionview-config unset agent_format` to take the new default.
+- The sessionview skill points to the sessionkit skill's card on several
+  agents in one seat or on one call, in one line after its opening
+  paragraph, and does not repeat the card.
+
+### Changed
+
+- A change now writes its changelog entry to its own file,
+  `changelog.d/<slug>.md`, and no longer edits `CHANGELOG.md`. Two changes
+  in flight never clash on one file, and an entry can no longer merge
+  cleanly under a version that has already been released.
+  `changelog.d/README.md` says how to write one.
+- `make release` collects the pending entries under the new version, each
+  section merged by name in Keep a Changelog order and its entries in
+  file-name order, then removes them in the release commit. It refuses a
+  malformed entry, or a file under `changelog.d/` it would not read, before
+  it bumps the version.
+- `make changelog` prints `[Unreleased]` as the next release will write it,
+  pending entries included. It writes nothing.
+- An earlier entry was reworded to drop a personal name.
+- `sessionview install --check` says WARN, not MISSING, when neomutt is
+  not installed, and still says ready. neomutt serves only the `messages`
+  tab, and sessionview makes that tab only when sessionmail is installed,
+  so a missing neomutt no longer reads as a failed install.
+  `docs/dependencies.md` now lists neomutt as optional.
+- The README and `docs/sessionview.md` quote the question sessionview asks
+  the first time it opens, about which agent to start, and how to answer
+  it. The README said the dock app asked it; sessionview does.
+- An agent whose name is too long for its row keeps its model, idle time
+  and context % on the right: the name is cut short with `…` instead.
+  Before, a long name pushed the whole right side off the row.
+- sessionview keeps its state in `~/.sessionkit/view/state/` and its log in
+  `~/.sessionkit/view/log/sessionview.log`, beside its settings, and no
+  longer makes files in `~/.local/state/sessionview/`. Both folders are mode
+  0700. `SESSIONVIEW_LOG` names another log file, and a `SESSIONVIEW_STATE`
+  you set is used as before, with the log in it. On an upgrade, the first
+  start hard-links `recent.tsv`, `picker-order`, `sidebar-mail.txt` and the
+  `mutt/` files into the new folder. The old names are kept, so a sidebar
+  still running from before sees the same files. The old folder stays,
+  with the old log, and the old log's last line names the new one. The
+  uninstall in the README removes both new folders, and keeps the line for
+  the old one.
+
+### Fixed
+
+- The first-run question that asks which agent to start lists each agent
+  once, by its name. The launcher's list gives a name and, after a tab, a
+  note such as `built in`, and the question split the whole list on spaces,
+  so it offered `built` and `in` as agents. It now reads only the name
+  before the tab. The sidebar's agent picker reads the list the same way,
+  and no longer shows a name with its note attached.
+- After you switch the sidebar to another store, a project's ready badge
+  counts that store's repo. When two stores each had a project of the same
+  name, the sidebar kept the first store's repo for that name, so the other
+  store's row showed the first store's count. The sidebar now remembers a
+  project's repo per store, and a lookup still running when you switch is
+  kept for the store it was asked for.
+- Missed from the 0.3.1 notes: a sidebar drag made just after opening
+  sessionview is kept. When the sidebar was slow to draw its first screen
+  (a busy machine), it showed 14 columns instead of 34 until it did, and a
+  drag in that time was put back to 34. The frame's window now starts at
+  your terminal's size, so opening it changes no width, and the sidebar
+  knows the width it starts at before it first draws.
+- The Dock app builds on a Mac without iTerm. `sessionview install --app`
+  failed there with osacompile's `Expected end of line, etc. but found class
+  name. (-2741)` and built nothing, because AppleScript reads iTerm's words
+  from iTerm itself at compile time. The iTerm branch is now compiled only
+  when it runs, and if iTerm is chosen but not installed, the app says so in
+  a dialog. Nothing changes where iTerm is installed.
+- A bare `sessionview` run outside tmux no longer makes an empty `main`
+  session beside the ones you already have. It lands in a session tmux
+  already holds: the one with your default assistant in it, else the one
+  you attached most recently, else the newest. It makes `main` only when
+  tmux has no session at all. `sessionview NAME`, and `sessionview` run
+  inside tmux, behave as before.
+- The files sessionview makes in its state and log folders are private
+  (mode 0600, `mutt/` 0700), not readable by other users. They held
+  project names and paths, mail paths and what the sidebar saw from remote
+  hosts. On an upgrade, each start also sets the old
+  `~/.local/state/sessionview/` folder to 0700, because the files linked
+  from it are still reachable through their old names. The mode is set
+  for each file, not with a umask, so the panes of a tmux server
+  sessionview starts keep your umask.
 
 ## [0.3.1] - 2026-10-25
 
@@ -199,8 +304,9 @@ All notable changes to sessionview are documented here. The format is
   `sessionview-config get width --where` names the new file, then remove the
   empty old folder. Until then `sessionview-config` refuses (exit 3) and
   prints the move; a leftover beside the new file is warned about.
-- Version 0.2.0. Author is Mike Bailey <mike@sessionkit.ai>. Project URLs
-  (homepage, repository) point at <https://github.com/sessionkit/sessionview>.
+- Version 0.2.0. The author is the maintainer, <mike@sessionkit.ai>. Project
+  URLs (homepage, repository) point at
+  <https://github.com/sessionkit/sessionview>.
   Development Status is now 3 - Alpha.
 - The PyPI summary is now "A sidebar for tmux: your projects (sessions) and
   your agents, here and on remote hosts." It no longer says the name is

@@ -144,7 +144,7 @@ Behaviour:
       `remotes = ["devbox"]`. A daemon
       thread per host runs ONE ssh call every remote_refresh seconds --
       `session list --json` + tmux list-panes + list-sessions -- through an
-      ssh control socket (~/.local/state/sessionview/ssh-cm-*; measured: 11.5s cold,
+      ssh control socket (measured: 11.5s cold,
       0.35s warm), so the 2s render never waits on the network. Remote
       projects sit under a host line after the local ones; remote seats join
       the agent list with " @host" on the row. A click opens (or raises) a
@@ -172,22 +172,155 @@ import json, os, re, select, shlex, shutil, signal, subprocess, sys, termios, th
 # evidence logs). Config: bin/sessionview-config (config/config.json template ->
 # the home file (`sessionview-config path`) -> store/project .sessionview, JSON).
 SESSIONVIEW_ROOT = os.environ.get("SESSIONVIEW_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-SESSIONVIEW_STATE = os.path.expanduser(os.environ.get("SESSIONVIEW_STATE", "~/.local/state/sessionview"))
-def _migrate_state():
-    """Move the state dir from its pre-release name, as lib/state.sh does."""
-    old = os.path.expanduser("~/.local/state/herd")
-    if (SESSIONVIEW_STATE == os.path.expanduser("~/.local/state/sessionview")
-            and not os.path.exists(SESSIONVIEW_STATE) and os.path.isdir(old)):
-        try:
-            os.rename(old, SESSIONVIEW_STATE)
-            for a, b in (("herd-recent.tsv", "recent.tsv"), ("herd.tty", "frame.tty")):
-                if os.path.exists(os.path.join(SESSIONVIEW_STATE, a)):
-                    os.rename(os.path.join(SESSIONVIEW_STATE, a), os.path.join(SESSIONVIEW_STATE, b))
-        except OSError:
-            pass
-_migrate_state()
-os.makedirs(SESSIONVIEW_STATE, exist_ok=True)
+def resolve_paths(environ):
+    """THE rule for where sessionview keeps its state and its log, in
+    Python; lib/state.sh holds the same rule in shell, and
+    tests/test_log_home.py proves the two agree. The rule and its reasons:
+    docs/decisions/state-and-log-home.md. It makes nothing.
+
+    - state: $SESSIONVIEW_STATE when set and not empty, else the default,
+      ~/.sessionkit/view/state.
+    - log: $SESSIONVIEW_LOG when set and not empty. Otherwise, when the
+      state dir IS the default (compared by value: the entry scripts export
+      it, so a sidebar they start sees it set), the kit's log; otherwise
+      $state/sessionview.log, so a state dir the user named keeps its log.
+
+    A value is used as given, as the shell uses it: empty is unset, no ~ is
+    expanded, nothing is normalised. The paths are joined as strings, as the
+    shell joins "$HOME/...", so the by-value comparison answers as the
+    shell's does (a HOME that ends in / keeps its doubled slash; no HOME at
+    all is the empty string, as in the shell).
+
+    Returns a dict: state, log, default (the state dir is the default),
+    kit_log (the default log), old_dir (the state dir before it moved, where
+    a sidebar still running keeps it) and old_log (the log there)."""
+    home = environ.get("HOME", "")
+    new_dir = home + "/.sessionkit/view/state"
+    old_dir = home + "/.local/state/sessionview"
+    state_dir = environ.get("SESSIONVIEW_STATE") or new_dir
+    default = state_dir == new_dir
+    kit_log = home + "/.sessionkit/view/log/sessionview.log"
+    log_file = environ.get("SESSIONVIEW_LOG") or (kit_log if default else state_dir + "/sessionview.log")
+    return {"state": state_dir, "log": log_file, "default": default, "kit_log": kit_log,
+            "old_dir": old_dir, "old_log": old_dir + "/sessionview.log"}
+PATHS = resolve_paths(os.environ)
+SESSIONVIEW_STATE = PATHS["state"]
+SESSIONVIEW_LOG = PATHS["log"]      # the log file (not exported: rule 2 derives it again)
+
+def _make_state_dir():
+    """The state dir, by the rule lib/state.sh makes it: the default is
+    sessionview's own, made 0700 and set to 0700 on every start; a dir the
+    user named is made 0700 only when it is missing, and an existing one is
+    never re-moded. The sidebar never links and never moves anything from
+    the old dir (lib/state.sh does, once); it reads through the fallback
+    (state_files). Never raises: a state dir that cannot be made only costs
+    the writes into it."""
+    d = SESSIONVIEW_STATE
+    try:
+        if PATHS["default"] or not os.path.isdir(d):
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            os.chmod(d, 0o700)
+    except OSError:
+        pass
+_make_state_dir()
 def state(name): return os.path.join(SESSIONVIEW_STATE, name)
+
+def _open_private(path, mode="w"):
+    """Open PATH to write it IN PLACE ("w" truncates, "a" appends; never a
+    temp file renamed over it), creating it 0600 when it is new. An existing
+    file keeps its mode and its inode: a state file may have a second name, a
+    hard link in the old state dir (docs/decisions/state-and-log-home.md,
+    section 3), and a file in a dir the user named is the user's. The mode
+    is given at the create, never by a process umask: a umask reaches every
+    child, and a tmux server started under one gives it to every pane."""
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode == "a" else os.O_TRUNC)
+    fd = os.open(path, flags, 0o600)
+    try:
+        return os.fdopen(fd, mode)
+    except Exception:
+        os.close(fd)
+        raise
+
+def state_files(name):
+    """Where to READ state file NAME, oldest first: the fallback
+    (docs/decisions/state-and-log-home.md, section 3). Every WRITE goes to
+    state(NAME). At the default state dir the old dir's file comes first,
+    when it is not the same file (a hard link made by lib/state.sh's link
+    step), so a name the link step has not linked yet, could not link, or
+    found already taken is still read. A state dir the user named has no
+    fallback."""
+    new = state(name)
+    if not PATHS["default"]:
+        return [new]
+    old = os.path.join(PATHS["old_dir"], name)
+    try:
+        if os.path.samefile(old, new):
+            return [new]
+    except OSError:
+        pass
+    return [old, new]
+
+def _log_line(where, text):
+    """One log line: time, socket, where, what."""
+    sock = globals().get("SOCK", "-")   # a line written before SOCK is known still lands
+    return f"{time.strftime('%Y-%m-%d %H:%M:%S')} sock={sock} {where}: {text}\n"
+
+def _start_log():
+    """Make the log's dir, and on the start that creates the kit's log, say
+    where the log went. Never raises.
+
+    The kit's log dir is sessionview's own: made 0700, and set to 0700 on
+    every start. A dir the user named (the dir of $SESSIONVIEW_LOG) is made
+    0700 only when it is missing, and an existing one is never re-moded.
+    The log FILE is made 0600; one that already exists keeps its mode.
+
+    When the state dir is the default and the log is the kit's, the log is
+    CREATED here, at start (O_EXCL), not at the first error, so a person
+    watching the old log is told even when nothing goes wrong. Only the
+    start whose create succeeds writes the two pointer lines, and only if
+    the old log exists: one into the new log naming the old file, one
+    appended to the old file naming the new one. The old log is never
+    created, moved, copied or truncated. That start also writes one line
+    naming each state file the link step left unlinked (read through the
+    fallback instead)."""
+    kit = SESSIONVIEW_LOG == PATHS["kit_log"] and PATHS["default"]
+    d = os.path.dirname(SESSIONVIEW_LOG)
+    try:
+        if kit:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            os.chmod(d, 0o700)
+        elif d and not os.path.isdir(d):
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            os.chmod(d, 0o700)
+    except OSError:
+        return
+    if not kit:
+        return
+    try:
+        fd = os.open(SESSIONVIEW_LOG, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600)
+    except OSError:
+        return                          # EEXIST: an earlier start, or another one, made it
+    old = PATHS["old_log"]
+    try:
+        with os.fdopen(fd, "a") as lg:
+            if os.path.isfile(old):
+                lg.write(_log_line("log", f"sessionview's log moved here; the log before it is {old}"))
+                ofd = os.open(old, os.O_WRONLY | os.O_APPEND)      # never O_CREAT
+                with os.fdopen(ofd, "a") as og:
+                    og.write(_log_line("log", f"sessionview's log moved to {SESSIONVIEW_LOG}"))
+            # A regular file in the old dir with nothing of its name in the
+            # new one is what a failed link(2) leaves (an EEXIST leaves a
+            # file in the new dir). Measured here, from the two dirs, so the
+            # shell needs no channel to the log.
+            left = [n for n in ("recent.tsv", "picker-order")
+                    if os.path.isfile(os.path.join(PATHS["old_dir"], n))
+                    and not os.path.lexists(state(n))]
+            if left:
+                lg.write(_log_line("log", f"{', '.join(left)} not linked into {SESSIONVIEW_STATE}: "
+                                          f"read from {PATHS['old_dir']} (the fallback)"))
+    except OSError:
+        pass
+_start_log()
 
 LOG_LEVELS = ("error", "timing", "debug")
 LOG_LEVEL = "error"     # set from `log_level` once the config is read (below CFG)
@@ -198,7 +331,8 @@ def log_at(level):
     return LOG_LEVELS.index(level) <= LOG_LEVELS.index(LOG_LEVEL)
 
 def log(level, where, text):
-    """ONE log for everything: ~/.local/state/sessionview/sessionview.log.
+    """ONE log for everything: SESSIONVIEW_LOG (resolve_paths), by default
+    ~/.sessionkit/view/log/sessionview.log.
     A line a person can read: time, socket, where, what. An error line is
     exactly as it always was; a timing or debug line names its level after
     the socket (`sock=X timing run: ...`), so the errors stay easy to grep.
@@ -206,10 +340,9 @@ def log(level, where, text):
     if not log_at(level):
         return
     tag = "" if level == "error" else level + " "
-    sock = globals().get("SOCK", "-")   # a line written before SOCK is known still lands
     try:
-        with open(state("sessionview.log"), "a") as lg:
-            lg.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} sock={sock} {tag}{where}: {text}\n")
+        with _open_private(SESSIONVIEW_LOG, "a") as lg:
+            lg.write(_log_line(tag + where, text))
     except Exception:
         pass
 
@@ -667,9 +800,16 @@ def ready_where(path, default):
     return val
 
 ONESHOT = False             # --once: resolve inline (main() sets it)
-_REPO = {}                  # name -> (resolved at, repo or "")
-_REPO_ASK = set()           # names a worker is resolving
+_REPO = {}                  # repo_key(name) -> (resolved at, repo or "")
+_REPO_ASK = set()           # repo_keys a worker is resolving
 _REPO_LOCK = threading.Lock()
+def repo_key(name):
+    """What a resolve's answer depends on: the viewed server and store (what
+    session_cmd passes as --socket and --store), and the name. Two stores can
+    each hold a project of the same name with its own repo; keyed by name
+    alone, a store switch served the other store's repo, and its badge."""
+    return (SOCK, viewed_store().get("path") or "", name)
+
 def project_repo(name):
     """The project's OWN repo, as sessionview-session resolves it (`--print`
     is its dry run: `repo=DIR`); "" until known, or when it names none. The
@@ -678,30 +818,37 @@ def project_repo(name):
     (measured the day it shipped).
     Never on the render loop: one --print is ~0.1 s, thirteen projects were
     +1.5 s a render. A thread resolves it; the badge appears a refresh later.
-    A repo found is kept for the process (a name's repo does not move; q or
-    SIGHUP reloads); "none" is asked again after 10 min."""
+    A repo found is kept for the process, per store (a name's repo does not
+    move; q or SIGHUP reloads); "none" is asked again after 10 min. A resolve
+    whose store is no longer the viewed one when its command is built writes
+    nothing: it would have asked the wrong store."""
+    key = repo_key(name)
     now = time.time()
     with _REPO_LOCK:
-        hit = _REPO.get(name)
+        hit = _REPO.get(key)
         if hit and (hit[1] or now - hit[0] < 600):
             return hit[1]
-        if name in _REPO_ASK:
+        if key in _REPO_ASK:
             return hit[1] if hit else ""
-        _REPO_ASK.add(name)
+        _REPO_ASK.add(key)
     def work():
-        r = ""
+        r, keep = "", True
         try:
-            p = subprocess.run(session_cmd(name, "--print"), capture_output=True, text=True, timeout=10)
-            m = re.search(r"(?:^|\s)repo=(\S+)", p.stdout + "\n" + p.stderr)
-            r = m.group(1) if m and os.path.isdir(m.group(1)) else ""
+            cmd = session_cmd(name, "--print")
+            keep = repo_key(name) == key
+            if keep:
+                p = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                m = re.search(r"(?:^|\s)repo=(\S+)", p.stdout + "\n" + p.stderr)
+                r = m.group(1) if m and os.path.isdir(m.group(1)) else ""
         except (OSError, subprocess.TimeoutExpired):
             pass
         with _REPO_LOCK:
-            _REPO[name] = (time.time(), r)
-            _REPO_ASK.discard(name)
+            if keep:
+                _REPO[key] = (time.time(), r)
+            _REPO_ASK.discard(key)
     if ONESHOT:                 # --once must be complete, as it is for remotes
         work()
-        return _REPO[name][1]
+        return _REPO.get(key, (0, ""))[1]
     threading.Thread(target=work, daemon=True).start()
     return hit[1] if hit else ""
 
@@ -923,15 +1070,21 @@ def picker_order():
     """recent | alpha -- the picker's sort. The last flip is remembered
     (state picker-order); before any flip, sidebar.toml `picker_order`, else
     recent. A flip to alphabetical is remembered from last time."""
-    try:
-        v = open(state("picker-order")).read().strip()
-    except OSError:
-        v = ""
+    v = ""
+    for path in reversed(state_files("picker-order")):     # the new dir's first
+        try:
+            v = open(path).read().strip()
+            break
+        except OSError:
+            pass
     return v if v in ("recent", "alpha") else CFG.get("picker_order", "recent")
 
 def flip_picker_order():
     new = "alpha" if picker_order() == "recent" else "recent"
-    with open(state("picker-order"), "w") as f:
+    # IN PLACE (_open_private truncates the same file), never a temp file renamed
+    # over it: picker-order may have a second name, a hard link in the old
+    # state dir, that a running older sidebar reads (decision section 3).
+    with _open_private(state("picker-order")) as f:
         f.write(new)
     _PROJ.clear()
 
@@ -984,6 +1137,22 @@ def repo_projects():
     _REPOS.update(t=now, v=found)
     return found
 
+def recent_times():
+    """{name: epoch} from recent.tsv, the latest time per name: the lines
+    bin/sessionview-session appends each time it opens a project. Read from
+    every file state_files() names (the old dir's too, until the two names
+    are one file), so no recent is lost however the files were split."""
+    rec = {}
+    for path in state_files("recent.tsv"):
+        try:
+            for l in open(path):
+                ts, _, n = l.rstrip("\n").partition("\t")
+                if n and ts.isdigit():
+                    rec[n] = max(rec.get(n, 0), int(ts))
+        except OSError:
+            pass
+    return rec
+
 def projects_recent():
     """[(name, recency_epoch)] most recent first, for the new-session picker. Names from
     `tm project list`; recency = the newer of the store's projects/NAME mtime
@@ -1017,14 +1186,7 @@ def projects_recent():
         if n not in seen:
             names.append(n)
             seen.add(n)
-    rec = {}
-    try:
-        for l in open(state("recent.tsv")):
-            ts, _, n = l.rstrip("\n").partition("\t")
-            if n and ts.isdigit():
-                rec[n] = max(rec.get(n, 0), int(ts))
-    except OSError:
-        pass
+    rec = recent_times()
     out = []
     for n in names:
         if not n:
@@ -1519,7 +1681,7 @@ def fetch_remote(host):
                     "p2w": {p[0]: p[2] for p in pl}, "ok": r.returncode == 0 or bool(agents_ or sess),
                     "err": (r.stderr.strip().splitlines() or [""])[-1][:24] if r.returncode else "", "t": time.time()}
     try:   # evidence: what this process last saw from the host (for a host row that shows nothing)
-        with open(state(f"sidebar-remote-{host}.json"), "w") as f:
+        with _open_private(state(f"sidebar-remote-{host}.json")) as f:
             json.dump({"t": time.strftime("%H:%M:%S"), "rc": r.returncode, "n_agents": len(agents_),
                        "sessions": sess, "err": REMOTE[host]["err"], "stderr": r.stderr[-600:],
                        "stdout_tail": out[-400:], "env_term": os.environ.get("TERM", ""), "path": os.environ.get("PATH", "")[:200]}, f)
@@ -1614,6 +1776,7 @@ def agent_fields(a, window="", dups=(), model_w=0):
     agent = a.get("agent") or ""
     f["label"] = (a.get("name") or agent) if (not agent or agent in dups) else agent
     f["idle"] = fmt_idle(a.get("idle_s") or 0)
+    f["idle_m"] = fmt_idle_cell(a)    # blank unless the seat is idle; always IDLE_W wide
     f["runtime"] = fmt_idle(a.get("runtime_s") or 0)
     # The CONTEXT rule `session list`'s table uses (sessiontools.context.cell):
     # `-` nothing measurable; `?` a reading whose fullness cannot be claimed -
@@ -1801,6 +1964,66 @@ def rollup(states):
 def fmt_idle(idle):
     return (f"{idle//3600}h" if idle >= 3600 else
             f"{idle//60}m" if idle >= 60 else f"{idle}s")
+
+# The {idle_m} cell: how long an IDLE seat has sat, in minutes, left of {ctx}.
+IDLE_W = 4                       # `999m`: the cell is always this wide, so rows line up
+C_IDLE_ORANGE = fg("#fab387")    # the palette's peach, beside the busy yellow
+C_IDLE_RED = fg("#f38ba8")       # the blocked glyph's red
+IDLE_DEFAULTS = {"agent_idle_orange": 45, "agent_idle_red": 60, "agent_idle_blink": 0}
+# The statuses that mean "at its prompt, its turn over": Claude Code writes
+# `shell`, not `idle`, whenever a background shell lives (a listener left
+# running is one), so many idle seats say `shell`; the session tools read
+# both as the state `idle`. busy, waiting and blocked are not idle.
+IDLE_STATUSES = ("idle", "shell")
+
+def idle_minutes_setting(key):
+    """A threshold in minutes from the config, or None for off: 0, a
+    negative number, null or false turn it off (the shipped blink is 0).
+    A value that is not a number (a typo in a hand-edited file) is the
+    default, never an error on every redraw."""
+    v = CFG.get(key, IDLE_DEFAULTS[key])
+    if v is None or v is False:
+        return None
+    try:
+        if isinstance(v, bool):
+            raise ValueError(v)
+        v = float(v)
+    except (TypeError, ValueError):
+        v = IDLE_DEFAULTS[key]
+    return v if v > 0 else None
+
+def fmt_idle_cell(a):
+    """The {idle_m} cell, IDLE_W columns wide whatever it holds. Blank unless
+    the seat is IDLE (its status is in IDLE_STATUSES): idle_s is the time in
+    the current state, so a seat busy for an hour has a large idle_s too,
+    and must show nothing.
+    An idle seat shows its whole minutes (`34m`; hours past 999m): dim grey,
+    then orange and bold from agent_idle_orange, red and bold from
+    agent_idle_red, blinking from agent_idle_blink when that is set (it is
+    off by default)."""
+    if a.get("status") not in IDLE_STATUSES:
+        return " " * IDLE_W
+    try:
+        secs = max(0, int(a.get("idle_s") or 0))
+    except (TypeError, ValueError):
+        secs = 0
+    mins = secs // 60
+    text = (f"{mins}m" if mins < 1000 else f"{secs // 3600}h").rjust(IDLE_W)
+    red, orange = idle_minutes_setting("agent_idle_red"), idle_minutes_setting("agent_idle_orange")
+    blink = idle_minutes_setting("agent_idle_blink")
+    if red is not None and mins >= red:
+        on = C_IDLE_RED + "\033[1m"
+    elif orange is not None and mins >= orange:
+        on = C_IDLE_ORANGE + "\033[1m"
+    else:
+        on = C_DIM
+    # Blink is its own threshold, not a shade of orange or red: set below
+    # agent_idle_orange (or with the colours off), the grey minutes blink.
+    if blink is not None and mins >= blink:
+        on += "\033[5m"
+    elif on == C_DIM:
+        return C_DIM + text + NOFG
+    return on + text + "\033[22;25m" + NOFG
 
 def current_session():
     """The session the frame client is looking at -- that is what 'selected'
@@ -2136,8 +2359,11 @@ def render_base(height=None):
         if gb != "none":                 # the header already shows `<group>+`
             f["label"] = short_name(f["label"], grp_of(a))
         try:
-            l1 = lay(CFG["agent_format"].format_map(f), WIDTH)
-            l2 = lay(CFG["agent_format2"].format_map(f), WIDTH) if two_a else None
+            # keep_right, as a project row does: a long label gives way with an
+            # ellipsis, so the model, the idle minutes and the context % stay
+            # on the row instead of the whole right side being dropped.
+            l1 = lay(CFG["agent_format"].format_map(f), WIDTH, keep_right=True)
+            l2 = lay(CFG["agent_format2"].format_map(f), WIDTH, keep_right=True) if two_a else None
         except (ValueError, KeyError) as e:
             l1, l2 = f" ! bad agent_format: {e}", None
         if sel:
@@ -2151,9 +2377,9 @@ def render_base(height=None):
             # dots opens the menu.
             fd = dict(f); fd["label"] = f["label"] + " " + C_DIM + "\u22ef" + NOFG
             try:
-                l1 = lay(CFG["agent_format"].format_map(_Safe(fd)), WIDTH)
+                l1 = lay(CFG["agent_format"].format_map(_Safe(fd)), WIDTH, keep_right=True)
             except (ValueError, KeyError):
-                l1 = lay(CFG["agent_format"].format_map(f), WIDTH)
+                l1 = lay(CFG["agent_format"].format_map(f), WIDTH, keep_right=True)
             plain = ANSI_RE.sub("", l1)
             x0 = plain.index("\u22ef") + 1 if "\u22ef" in plain else 0    # 1-based column of the dots
             put(paint(l1, sel), ("pane-dots", (tgt, x0)), sel)
@@ -2385,7 +2611,7 @@ def frame_attach(frame, sock, session):
     tty_ = sh(["tmux", "-L", fsock, "display-message", "-p", "-t", main, "#{pane_tty}"]).strip()
     pin = os.environ.get("SESSIONVIEW_PIN")
     if pin and tty_:
-        with open(pin, "w") as f:
+        with _open_private(pin) as f:
             f.write(tty_)
     _CLIENT.clear()
 
@@ -2930,6 +3156,9 @@ def mail(addr, text):
     through a 0600 FILE because the send evaluates nothing it reads:
     a backtick in what the user types stays a backtick."""
     path = state("sidebar-mail.txt")
+    # IN PLACE (O_TRUNC on the same file), never a temp file renamed over it:
+    # the file may have a second name, a hard link in the old state dir
+    # (decision section 3).
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(text + "\n")
@@ -3049,7 +3278,10 @@ def registered_agents():
         out = subprocess.run(["session", "start", "--list-agents"],
                              capture_output=True, text=True, timeout=3)
         if out.returncode == 0:
-            names = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+            # NAME, or NAME<TAB>MARK (`claude<TAB>built in`): the name is
+            # the field before the first tab, never the whole line.
+            names = [nm for nm in (ln.split("\t", 1)[0].strip()
+                                   for ln in out.stdout.splitlines()) if nm]
             if names:
                 return names
     except Exception:

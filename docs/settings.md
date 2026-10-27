@@ -67,8 +67,11 @@ Each table below gives a key's type, its default and what it does.
 | Key | Type | Default | What it does |
 | --- | --- | --- | --- |
 | `agents_heading` | string | `" agents\tgrouped "` | The agents heading. |
-| `agent_format` | string | `" {glyph} {at}{label}\t{model} {ctx} "` | An agent row. |
+| `agent_format` | string | `" {glyph} {at}{label}\t{model} {idle_m} {ctx} "` | An agent row. `{idle_m}` is how many minutes an idle seat has sat, left of the context; it is blank for a busy, waiting or blocked seat. |
 | `agent_format2` | string | `"   {agent}\t{ctx} {idle} "` | An agent's second line, shown when `agent_two_line` is on. |
+| `agent_idle_orange` | integer | `45` | Minutes idle before `{idle_m}` turns orange and bold. `0`: never. |
+| `agent_idle_blink` | integer | `0` | Minutes idle before `{idle_m}` blinks. `0`: never, the default; `55` starts the blink five minutes before red, and it goes on blinking once red. |
+| `agent_idle_red` | integer | `60` | Minutes idle before `{idle_m}` turns red and bold. `0`: never. |
 | `agent_two_line` | boolean | `false` | Every agent gets its second line. |
 | `agent_gap` | integer | `0` | Blank rows between agents. |
 | `group_by` | string | `"none"` | Group agents: `none`, `repo`, `project` or `session`. |

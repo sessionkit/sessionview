@@ -66,11 +66,17 @@
 # create a session named `store` and to start a down server: that is
 # `tm store boot`'s job. No recency line: a store is not a project.
 # (end of usage)
-# REPO RESOLUTION, in order: `tm project get NAME`'s git url as ~/Code/<url
-# with : -> /> minus .git, when that dir exists; else the first git repo a
-# ~/Code/*/*/NAME glob finds; else one under `project_dirs` (below); else no
-# repo, which is allowed. --repo DIR overrides. An existing session is left as it is (just
-# given the sessionview look). Records NAME in ~/.local/state/sessionview/recent.tsv for
+# REPO RESOLUTION, in the store --store names: when `tm project get NAME`,
+# asked from that store, gives a git url, the repo is the clone whose
+# `origin` matches it (the ssh://, https:// and host:path forms, with or
+# without .git, all match), looked for at ~/Code/<url with : -> /> minus
+# .git, then by the url's last part and by NAME in ~/Code/*/* and under
+# `project_dirs`; no match = the dir at that first path if it is a repo,
+# else no repo, never a dir of the same name from another store. No url
+# (no taskmaster, or no such project): the first git repo a ~/Code/*/*/NAME
+# glob finds; else one under `project_dirs` (below); else no repo, which is
+# allowed. --repo DIR overrides. An existing session is left as it is (just
+# given the sessionview look). Records NAME in the state dir's recent.tsv for
 # the picker's "most recently opened first".
 set -u
 SESSIONVIEW_ROOT="${SESSIONVIEW_ROOT:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
@@ -107,7 +113,7 @@ while [ $# -gt 0 ]; do case "$1" in
   *) NAME="$1";;
 esac; shift; done
 # The state dir and the Python only after the flags: -h touches nothing.
-SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
+. "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
 [ -n "$NAME" ] || { echo "sessionview-session: NAME required" >&2; usage 2; }
 [ "$PLAIN" = 0 ] && PLAIN=1 || PLAIN=0     # PLAIN=1 means: no profile
 
@@ -156,47 +162,96 @@ sys.exit(3)                                   # a registry, and PATH is not in i
   [ "$STOREMISS" = 1 ] && STOREID=""
 fi
 if [ -z "$REPO" ] && [ -z "$STOREVIEW" ]; then
-  # Asked FROM the store: `tm project get` has no --store flag and scopes by
-  # cwd, so asked from here it answered for the ACTIVE store - with three
-  # things of the same name (the store, a project in it, a project in another
-  # store) that was the wrong one.
+  # The store asked is the store answered: `tm project get` has no --store
+  # flag and scopes by cwd, so it is asked FROM the store. Asked from anywhere
+  # else it answered for the ACTIVE store - with three things of the same name
+  # (the store, a project in it, a project in another store) that was the
+  # wrong one.
   URL="$(cd "$STORE" 2>/dev/null && tm project get "$NAME" -f json 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("url") or "")
 except Exception: print("")')"
-  if [ -n "$URL" ]; then
-    D="$HOME/Code/${URL//://}"; D="${D%.git}"
-    [ -d "$D" ] && REPO="$D"
-  fi
-  if [ -z "$REPO" ]; then
-    for D in "$HOME"/Code/*/*/"$NAME"; do [ -d "$D/.git" ] && { REPO="$D"; break; }; done
-  fi
   # Projects that live on disk, not in a store: the same `project_dirs` the
   # sidebar OFFERS names from must be where a picked name OPENS from, or the
   # picker lists things that land in $HOME (a new user with no taskmaster
-  # and their work in ~/workspace). Depth is the
-  # config's; `.git` may be a file, so -e, not -d.
-  if [ -z "$REPO" ]; then
-    DIRS="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get project_dirs --store "$STORE" 2>/dev/null \
-            | python3 -c 'import json,sys,os
+  # and their work in ~/workspace). Depth is the config's; `.git` may be a
+  # file, so -e, not -d. Prints every dir named $1 there, in walk order.
+  DIRS=""; DEPTH=""
+  project_dirs_find() {
+    if [ -z "$DEPTH" ]; then
+      DIRS="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get project_dirs --store "$STORE" 2>/dev/null \
+              | python3 -c 'import json,sys,os
 try: v = json.load(sys.stdin)
 except Exception: v = []
 for d in (v if isinstance(v, list) else []): print(os.path.expanduser(str(d)))' 2>/dev/null)"
-    DEPTH="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get project_dirs_depth --store "$STORE" 2>/dev/null)"
-    case "$DEPTH" in ''|*[!0-9]*) DEPTH=2;; esac
-    [ "$DEPTH" -gt 4 ] && DEPTH=4
-    OLDIFS="$IFS"; IFS='
+      DEPTH="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get project_dirs_depth --store "$STORE" 2>/dev/null)"
+      case "$DEPTH" in ''|*[!0-9]*) DEPTH=2;; esac
+      [ "$DEPTH" -gt 4 ] && DEPTH=4
+    fi
+    local OLDIFS="$IFS" B L PAT D; IFS='
 '
     for B in $DIRS; do
       [ -d "$B" ] || continue
-      L=1; PAT="$B/$NAME"
+      L=1; PAT="$B/$1"
       while [ "$L" -le "$DEPTH" ]; do
-        for D in $PAT; do [ -e "$D/.git" ] && { REPO="$D"; break; }; done
-        [ -n "$REPO" ] && break
-        L=$((L + 1)); PAT="$B$(printf '/*%.0s' $(seq 1 $((L - 1))))/$NAME"
+        for D in $PAT; do [ -e "$D/.git" ] && printf '%s\n' "$D"; done
+        L=$((L + 1)); PAT="$B$(printf '/*%.0s' $(seq 1 $((L - 1))))/$1"
       done
-      [ -n "$REPO" ] && break
     done
     IFS="$OLDIFS"
+  }
+  if [ -n "$URL" ]; then
+    # The store gave a URL: the repo is the clone whose `origin` IS that URL,
+    # never a dir picked by its path or its name alone. A clone can sit
+    # anywhere, and another store may hold a project of the same name. The
+    # candidates: the path the URL spells (~/Code/<url with : as />), then a
+    # dir named for the URL's last part, then one named NAME, each in
+    # ~/Code/*/* and under `project_dirs`. Each is taken only if its origin
+    # matches, after both sides drop user@, a :port, a trailing / and .git,
+    # and the ssh://, https:// and host:path forms all read host/path. None
+    # matches: the path the URL spells, if it holds a repo - it is named by
+    # this store's URL, not by NAME, and a clone there may carry another
+    # spelling of the same remote (a host alias, a forge's own path). Else no
+    # repo: its own store's repo or none, never a dir found by name alone.
+    UBASE="${URL%/}"; UBASE="${UBASE%.git}"; UBASE="${UBASE##*[/:]}"
+    D="$HOME/Code/${URL//://}"; D="${D%.git}"
+    REPO="$({ printf '%s\n' "$D"
+              for N in "$UBASE" "$NAME"; do
+                [ -n "$N" ] || continue
+                for C in "$HOME"/Code/*/*/"$N"; do printf '%s\n' "$C"; done
+                project_dirs_find "$N"
+              done; } | python3 -c 'import os,re,subprocess,sys
+def key(u):
+    u = u.strip().rstrip("/")
+    if u.endswith(".git"): u = u[:-4]
+    u = u.rstrip("/")
+    m = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/]*@)?([^/:]*)(?::\d*)?(/.*)?$", u)
+    if m: host, path = m.group(1), m.group(2) or ""
+    else:
+        m = re.match(r"^(?:[^@/:]*@)?([^/:]+):(.*)$", u)
+        if not m: return os.path.realpath(os.path.expanduser(u)) if u else ""
+        host, path = m.group(1), m.group(2)
+    path = path.lstrip("/")
+    return host.lower() + "/" + path if host else "/" + path
+want = key(sys.argv[1])
+seen = set()
+for line in sys.stdin:
+    d = line.rstrip("\n")
+    if not d or d in seen or not os.path.exists(os.path.join(d, ".git")): continue
+    seen.add(d)
+    try:
+        r = subprocess.run(["git", "-C", d, "remote", "get-url", "origin"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception: continue
+    if r.returncode == 0 and want and key(r.stdout) == want:
+        print(d); sys.exit(0)
+spelled = sys.argv[2]
+if os.path.exists(os.path.join(spelled, ".git")): print(spelled)' "$URL" "$D" 2>/dev/null)"
+  else
+    # No URL (no taskmaster, or no such project in this store): a name is all
+    # there is. The first git repo a ~/Code/*/*/NAME glob finds, else the
+    # first under `project_dirs`.
+    for D in "$HOME"/Code/*/*/"$NAME"; do [ -d "$D/.git" ] && { REPO="$D"; break; }; done
+    [ -n "$REPO" ] || REPO="$(project_dirs_find "$NAME" | head -n 1)"
   fi
 fi
 ROOT="${REPO:-${PROJDIR:-$HOME}}"
@@ -456,7 +511,12 @@ else
   if [ -n "$FOCUS" ]; then t select-window -t "=$NAME:$FOCUS"; else t select-window -t "=$NAME:0"; fi
 fi
 [ "$PRINT" = 1 ] || { S="$NAME"; . "$SESSIONVIEW_ROOT/tmux/frame.conf"; }
-# the picker's recency is PROJECTS: a store session never joins it
-[ "$PRINT" = 1 ] || [ -n "$STOREVIEW" ] || printf '%s\t%s\n' "$(date +%s)" "$NAME" >>"$SESSIONVIEW_STATE/recent.tsv"
+# the picker's recency is PROJECTS: a store session never joins it. Appended
+# IN PLACE (>>), never a temp file renamed over it: recent.tsv may have a
+# second name, a hard link in the old state dir, that a running older sidebar
+# reads (docs/decisions/state-and-log-home.md, section 3). Made 0600 when it is
+# new: the umask is the subshell's alone, never this script's, whose children
+# (tmux among them) would inherit it; an existing file keeps its mode.
+[ "$PRINT" = 1 ] || [ -n "$STOREVIEW" ] || ( umask 077; printf '%s\t%s\n' "$(date +%s)" "$NAME" >>"$SESSIONVIEW_STATE/recent.tsv" )
 say "done"
 exit 0   # explicitly: `say` is false when not printing, and the last status was the script's rc (1)

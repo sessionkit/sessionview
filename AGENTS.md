@@ -45,9 +45,12 @@ with no Python dependencies.
 - `make app` builds the macOS Dock app.
 - `make scan` is the pre-publish leak check. It needs `SESSIONKIT_SCAN`.
 - `make build` puts a wheel and an sdist into the dist folder. It needs uv.
-- `make release` bumps the version, commits and tags. It bumps the patch
-  number unless you say otherwise: `make release BUMP=minor` (or
-  `BUMP=major`), or `make release VERSION=X.Y.Z` to set it.
+- `make changelog` prints the pending changelog entries as the next
+  release will write them. It writes nothing.
+- `make release` bumps the version, collects `changelog.d/` into
+  `CHANGELOG.md`, commits and tags. It bumps the patch number unless you
+  say otherwise: `make release BUMP=minor` (or `BUMP=major`), or
+  `make release VERSION=X.Y.Z` to set it.
 - `make push` pushes the branch and the tags. `make release` never
   pushes.
 - `make publish` uploads this version to PyPI. The token is never on a
@@ -60,8 +63,18 @@ The version lives in `pyproject.toml` only. `scripts/release.py` (run by
 `make release`) sets it with `uv version` and copies it into
 `.claude-plugin/plugin.json` and `src/sessionview/__init__.py`. Never edit
 a copy by hand: `tests/test_release.py` fails when they differ. Add
-`--dry-run` (`uv run python scripts/release.py patch --dry-run`) to see the
-plan without changing anything.
+`--dry-run` (`python3 scripts/release.py patch --dry-run`) to see the plan
+without changing anything. Run it with `python3`, never `uv run`, which
+re-locks.
+
+A branch with a user-visible change writes its changelog entry as ONE
+fragment, `changelog.d/<slug>.md`, and never edits `CHANGELOG.md`: nothing
+goes under its `## [Unreleased]` heading. The slug is the tail of the
+branch name, and neither the file name nor its text carries a tracker ID.
+`changelog.d/README.md` says how to write one. A change no user would
+notice writes no fragment and says so in its description. Two branches
+that edit `CHANGELOG.md` clash on it; two that each add a fragment never
+do.
 
 ## Rules
 

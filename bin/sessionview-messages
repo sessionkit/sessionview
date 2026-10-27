@@ -108,16 +108,21 @@ if command -v notmuch >/dev/null 2>&1; then
     *) SIDEBAR_WHY="$FOLDER is not under notmuch database.path $DB";;
   esac; fi
 else SIDEBAR_WHY="no notmuch on PATH (brew install notmuch)"; fi
-SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; STATE="$SESSIONVIEW_STATE/mutt"; mkdir -p "$STATE"
+. "$SESSIONVIEW_ROOT/lib/state.sh"; STATE="$SESSIONVIEW_STATE/mutt"; mkdir -p -m 700 "$STATE"
 RC="$STATE/${BOX//\//-}.rc"
-{
+# Written IN PLACE (> truncates the same file), never a temp file renamed over
+# it: the rc may have a second name, a hard link in the old state dir's mutt/
+# (docs/decisions/state-and-log-home.md, section 3). Made 0600 when it is new:
+# the umask is the subshell's alone, never this script's, which execs neomutt;
+# an existing rc keeps its mode.
+( umask 077; {
   printf 'set mbox_type=Maildir\nset folder="%s"\nset spoolfile=+\nset mark_old=no\n' "$FOLDER"
   [ -n "$SIDEBAR_WHY" ] && printf '# sidebar: %s\n' "$SIDEBAR_WHY"
   [ -n "$SIDEBAR" ] && printf '%s\n' "$SIDEBAR"
   printf 'source "%s"\n' "$SESSIONVIEW_ROOT/config/neomuttrc"
   [ -z "$SIDEBAR" ] && printf 'set sidebar_visible=no\n'
   [ -f "$VIEW_SETTINGS/neomuttrc" ] && printf 'source "%s"\n' "$VIEW_SETTINGS/neomuttrc"
-} >"$RC"
+} >"$RC" )
 if [ "$PRINT" = 1 ]; then
   echo "box=$BOX folder=$FOLDER rc=$RC"
   if [ -n "$SIDEBAR" ]; then echo "sidebar=$NAME, Asks, Asks · threads${SIDEBAR_WHY:+ ($SIDEBAR_WHY)}"

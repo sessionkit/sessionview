@@ -21,10 +21,11 @@
 -- shell's profile is where PATH is defined, so it is what finds tmux and
 -- sessionview. A login shell may be zsh or a Homebrew bash.
 --
--- tmux does NOT need to be running first. sessionview-frame creates its
--- inner session when none exists ("has-session ... || new-session -d"), so a
--- cold boot is a supported start. What it cannot survive is tmux not being
--- INSTALLED, which is why that is checked and named below.
+-- tmux does NOT need to be running first. sessionview-frame lands in a
+-- session tmux already has, and creates one (main) when there is none
+-- ("has-session ... || new-session -d"), so a cold boot is a supported
+-- start. What it cannot survive is tmux not being INSTALLED, which is why
+-- that is checked and named below.
 
 set sv to resolveLauncher()
 set cmd to (quoted form of userShell()) & " -lic " & quoted form of (quoted form of sv)
@@ -32,7 +33,19 @@ set term to chooseTerminal()
 set wantFull to wantsFullscreen()
 
 if term is "iterm" then
-	tell application "iTerm"
+	-- iTerm's words (`create window ...`, `fullscreen`) come from iTerm's own
+	-- dictionary, and AppleScript looks a dictionary up when the script is
+	-- COMPILED, not when it runs. Written as a plain tell block they made this
+	-- whole file fail to compile on a Mac without iTerm, so the Dock app could
+	-- not be built there at all, even for a user who never picks iTerm.
+	--
+	-- So the iTerm block is a STRING, compiled only when this branch runs, and
+	-- only then needs iTerm. It is the same statements, run by `run script` in
+	-- this same process, so the Automation consent the user gave this app for
+	-- iTerm still applies. cmd and wantFull go in as PARAMETERS, never spliced
+	-- into the text, so no quote in a path can break it.
+	set itermScript to "on run {cmd, wantFull}
+	tell application \"iTerm\"
 		activate
 		create window with default profile command cmd
 		if wantFull then
@@ -41,6 +54,19 @@ if term is "iterm" then
 			end try
 		end if
 	end tell
+end run"
+	try
+		run script itermScript with parameters {cmd, wantFull}
+	on error errMsg number errNum
+		if errNum is -128 then error number -128
+		-- e.g. `terminal: iterm` in the config on a Mac where iTerm is not
+		-- installed: the string does not compile here. Say so; never fail mute.
+		display alert "SessionView cannot open iTerm" message "iTerm is the terminal chosen for sessionview, but it could not be run:
+" & errMsg & " (" & errNum & ")
+
+Is iTerm installed? Install it, or choose another terminal:  sessionview config set terminal terminal" as critical
+		error number -128
+	end try
 else if term is "ghostty" then
 	set ghosttyArgs to "--working-directory=$HOME"
 	if wantFull then set ghosttyArgs to ghosttyArgs & " --fullscreen=true"

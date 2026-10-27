@@ -7,7 +7,9 @@
 #
 #   sessionview-frame [SESSION] [--sock SOCKET] [--width N]
 #
-# SESSION   what the right pane attaches (default: main)
+# SESSION   what the right pane attaches (default: a session the server
+#           already has: the default seat's, else the last attached, else
+#           the newest; main, made, only when the server has none)
 # --sock    the tmux server SESSION lives on (default: default; a store's is
 #           tm-store-NAME)
 # --width   sidebar columns (default: config width via sessionview-config, else 34)
@@ -32,7 +34,7 @@ while [ $# -gt 0 ]; do case "$1" in
   *) SESSION="$1"; GIVEN=1;;
 esac; shift; done
 # The state dir and the Python only after the flags: -h touches nothing.
-SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
+. "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
 # The frame takes over the terminal it runs in, so it needs one: a script or
 # an agent's shell (stdin/stdout not a tty) is refused and nothing is touched.
 # Every refusal is one line on stderr, exit 2.
@@ -72,10 +74,20 @@ if [ -n "${TMUX:-}" ]; then
   # (measured: SESSIONVIEW_FRAME_SOCK set here did not reach the frame,
   # which landed on the default frame server) - carry what matters by hand.
   cmd="SESSIONVIEW_ROOT=$(q "$SESSIONVIEW_ROOT") SESSIONVIEW_STATE=$(q "$SESSIONVIEW_STATE") SESSIONVIEW_PYTHON=$(q "${SESSIONVIEW_PYTHON:-}")"
+  # A log the user gave goes too; a derived one never does (lib/state.sh).
+  if [ -n "${SESSIONVIEW_LOG:-}" ]; then cmd="$cmd SESSIONVIEW_LOG=$(q "$SESSIONVIEW_LOG")"; fi
   cmd="$cmd SESSIONVIEW_FRAME_SOCK=$(q "$FRAME_SOCK") TMUX="
   cmd="$cmd exec $(q "$0") $(q "$SESSION") --sock $(q "$SOCK")"
   [ -n "$WIDTH" ] && cmd="$cmd --width $(q "$WIDTH")"
   exec tmux -S "$here_path" detach-client -t "$ctty" -E "$cmd"
+fi
+# Outside tmux with no SESSION named: land in a session the server already
+# has (the default seat's, else the last attached, else the newest; the rule
+# and its reasons are in lib/landing.sh). `main` is made below only when the
+# server has no session at all.
+if [ -z "$GIVEN" ]; then
+  . "$SESSIONVIEW_ROOT/lib/landing.sh"
+  if sv_landing "$SOCK"; then SESSION="$SV_LANDING"; fi
 fi
 if [ -z "$WIDTH" ]; then
   WIDTH="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get width 2>/dev/null || true)"
@@ -209,7 +221,9 @@ o resize-pane -t "$SIDE" -x "$WIDTH"
 TTY="$(tty 2>/dev/null || echo none)"
 o set-hook -g "client-detached[$$]" "if -F '#{==:#{hook_client},$TTY}' 'kill-session -t =$F'"
 o select-pane -t "$MAIN"
-# pin = the client pane's tty: that is the client the sidebar may move
-o display-message -p -t "$MAIN" '#{pane_tty}' >"$PIN"
+# pin = the client pane's tty: that is the client the sidebar may move. Made
+# 0600: the umask is the subshell's alone, never this script's, which starts
+# the user's tmux server (a server keeps its umask for every pane it opens).
+( umask 077; o display-message -p -t "$MAIN" '#{pane_tty}' >"$PIN" )
 o attach -t "=$F"
 cleanup

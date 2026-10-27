@@ -32,7 +32,9 @@ case "$*" in
     : > "{mark}/called"
     i=0
     while [ ! -e "{mark}/release" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
-    [ -n "{names}" ] && printf '%s\\n' {names}
+    if [ -f "{mark}/list" ]; then cat "{mark}/list"
+    elif [ -n "{names}" ]; then printf '%s\\n' {names}
+    fi
     ;;
   "list --json") echo '[]' ;;
   *) exit 0 ;;
@@ -52,15 +54,19 @@ def wait_for(pred, timeout):
 
 @unittest.skipUnless(support.have_tmux(), support.TMUX_SKIP)
 class FirstRunQuestion(unittest.TestCase):
-    def start(self, names):
+    def start(self, names, raw=None):
         """Run the autostart's ask path in a private tmux pane; return (pane
-        capture function, marker dir)."""
+        capture function, marker dir). RAW, if given, is the exact text the
+        stub prints for --list-agents, in place of NAMES one per line."""
         tmp = tempfile.mkdtemp(prefix="sv-test-")
         self.addCleanup(shutil.rmtree, tmp, True)
         mark = os.path.join(tmp, "mark")
         stubs = os.path.join(tmp, "bin")
         os.mkdir(mark)
         os.mkdir(stubs)
+        if raw is not None:
+            with open(os.path.join(mark, "list"), "w") as f:
+                f.write(raw)
         stub = os.path.join(stubs, "session")
         with open(stub, "w") as f:
             f.write(STUB.format(mark=mark, names=" ".join(names)))
@@ -129,6 +135,24 @@ class FirstRunQuestion(unittest.TestCase):
         self.assertTrue(asked, "the menu question never came:\n" + late)
         self.assertIn("1) cleo", late)
         self.assertIn("2) pat", late)
+
+    # The launcher prints NAME<TAB>MARK, and a mark can hold a space
+    # (`claude<TAB>built in`). Only the name is an agent: the menu once
+    # offered "built" and "in". A line with no mark is a name alone.
+    def test_menu_offers_only_the_name_field(self):
+        screen, mark = self.start([], raw="claude\tbuilt in\nengineer\npat\tsome mark\n")
+        self.assert_text_before_list(screen, mark)
+        asked = wait_for(lambda: "Which? (number" in screen(), 10)
+        late = screen()
+        self.assertTrue(asked, "the menu question never came:\n" + late)
+        self.assertIn("1) claude", late)
+        self.assertIn("2) engineer", late)
+        self.assertIn("3) pat", late)
+        self.assertNotIn("4)", late)
+        for word in ("built", "in", "some", "mark"):
+            self.assertNotIn(f") {word}\n", late + "\n")
+        got = self.answer(screen, ["3", "Enter"])
+        self.assertEqual(got, "pat", "the number picked a mark word:\n" + screen())
 
     def test_free_text_question_text_before_an_empty_list(self):
         screen, mark = self.start([])

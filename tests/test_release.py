@@ -24,8 +24,8 @@ refused with the tree as found.
 The push is narrow: release.py prints, and `make push` runs, the branch by name
 and then the ONE release tag by its full refname, never `--tags` (which sends
 every local tag: fallback/*, export/*, ready/*). PushAdvice and MakeTargets pin
-that, and `make release` running python3, not a re-locking `uv run`. The make
-recipes are read as text, never run.
+that, and `make release` and `make changelog` running python3, not a
+re-locking `uv run`. The make recipes are read as text, never run.
 """
 import contextlib
 import importlib.util
@@ -95,7 +95,10 @@ class VersionCopies(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("uv"), UV_SKIP)
-class ReleaseScript(unittest.TestCase):
+class ReleaseRepo(unittest.TestCase):
+    """The scratch repo and its helpers, with no tests of its own: ReleaseScript
+    here and test_release_fragments.FragmentRelease each run their cases in it."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="sv-release-")
         self.addCleanup(self.tmp.cleanup)
@@ -150,6 +153,9 @@ class ReleaseScript(unittest.TestCase):
         self.assertEqual(self.snapshot(), before, "a refusal must leave the tree, HEAD and tags as found")
         return out
 
+
+@unittest.skipUnless(shutil.which("uv"), UV_SKIP)
+class ReleaseScript(ReleaseRepo):
     # -- the real run --------------------------------------------------------
 
     def test_set_mirrors_stamps_commits_and_tags(self):
@@ -465,6 +471,9 @@ def recipe(target):
 class MakeTargets(unittest.TestCase):
     def test_make_release_runs_python3_not_uv_run(self):
         self.assertEqual(recipe("release"), ["@python3 scripts/release.py $(or $(VERSION),$(BUMP))"])
+
+    def test_make_changelog_runs_python3_not_uv_run(self):
+        self.assertEqual(recipe("changelog"), ["@python3 scripts/release.py --preview"])
 
     def test_make_push_pushes_the_branch_and_one_tag_by_name(self):
         body = " ".join(recipe("push"))

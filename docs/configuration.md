@@ -11,7 +11,7 @@ files and variables that set it and where each one lives.
 - [Plugins](#plugins): the right-click menu's actions.
 - [Project sessions](#project-sessions): the tabs a project session opens.
 - [tmux](#tmux): the look, the tab bar and the agent pane menu.
-- [Paths](#paths): the checkout, the state directory and Python.
+- [Paths](#paths): the checkout, the state directory, the log and Python.
 - [The kit's settings](#the-kits-settings): not read by sessionview today.
 - [Upgrading from 0.1.0](#upgrading-from-010): moving your settings to
   the new home, once.
@@ -75,7 +75,7 @@ The `messages` tab shows a project's mail in neomutt, read-only.
   first).
 - `~/.sessionkit/view/settings/neomuttrc`: yours, read after the shipped
   one, so it wins. Optional.
-- `~/.local/state/sessionview/mutt/`: the per-folder files sessionview
+- `~/.sessionkit/view/state/mutt/`: the per-folder files sessionview
   writes for neomutt. Not for editing.
 - neomutt runs with `-R -F`, so `~/.muttrc` is never read for this tab.
 - The tab's sidebar needs notmuch to index two headers:
@@ -129,8 +129,22 @@ repository.
 - `SESSIONVIEW_ROOT`: the checkout. Worked out from where the command
   lives; an install from PyPI sets it to the package's data directory.
 - `SESSIONVIEW_STATE`: the state directory, default
-  `~/.local/state/sessionview`. It holds recent projects, the picker
-  order and the logs (see the README's Logs section).
+  `~/.sessionkit/view/state` (mode 0700). It holds recent projects, the
+  picker order, the frame pins and the messages tab's `mutt/` files.
+- `SESSIONVIEW_LOG`: the log file, default
+  `~/.sessionkit/view/log/sessionview.log` (the folder is mode 0700).
+  When it is unset and `SESSIONVIEW_STATE` names another directory, the
+  log is `sessionview.log` in that directory (see the README's Logs
+  section).
+- Upgrading from a release that kept state in
+  `~/.local/state/sessionview`: the first start hard-links its
+  `recent.tsv`, `picker-order`, `sidebar-mail.txt` and `mutt/` files
+  into the new state directory, keeping the old names, and leaves the
+  old directory in place with the old log in it. Each start sets the old
+  directory to mode 0700, since the old names open the same files. A
+  `SESSIONVIEW_STATE` you set yourself is used as it is: nothing is
+  linked into it and it is never re-moded, but each file sessionview
+  makes there is mode 0600, as in the default directory.
 - `SESSIONVIEW_PYTHON`: the Python 3.11 or newer to use. When unset: the
   venv a package was installed into, if any, then PATH (newest first).
 

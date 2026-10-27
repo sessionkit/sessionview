@@ -62,8 +62,17 @@ labels.
   you see what the tags are; "" turns that off.
 - `agent_format` `agent_format2` `agent_two_line` `agent_gap` (blank rows
   between agents, like `project_gap`) - fields: everything
-  `session list --json` returns plus glyph idle runtime ctx window tab at.
-  Naming recap/ctx costs a transcript read per seat.
+  `session list --json` returns plus glyph idle idle_m runtime ctx window
+  tab at. Naming recap/ctx costs a transcript read per seat.
+- `agent_idle_orange` `agent_idle_blink` `agent_idle_red` - the `{idle_m}`
+  field: an IDLE seat's whole minutes (`34m`), always four columns wide so
+  the rows line up, and blank for a busy, waiting or blocked seat
+  (`idle_s` is the time in the CURRENT state, so a seat busy for an hour
+  has a large one too). A `shell` seat is idle: it is at its prompt while
+  a background shell lives. Dim grey, then orange and bold from `agent_idle_orange` (45),
+  red and bold from `agent_idle_red` (60), blinking from
+  `agent_idle_blink`, which is 0, off, by default (55 starts the blink five
+  minutes before red; it goes on blinking once red). All in minutes; 0 turns one off.
 - `store_format` `mid_format` `agents_heading` `group_format` `collapse`
   - the fixed rows; `collapse` is "" (off) by default.
 - `user_mail_command` `user_mail_socket` `user_mail_session`
@@ -136,7 +145,7 @@ labels.
   per-folder rc that sources it, then `~/.sessionkit/view/settings/neomuttrc`
   if you have one - so yours overrides. neomutt runs `-R -F` there: read-only,
   and your `~/.muttrc` is never read.
-- Errors go to ONE file: `~/.local/state/sessionview/sessionview.log` - a failed
+- Errors go to ONE file: `~/.sessionkit/view/log/sessionview.log` - a failed
   tmux call (a new tab that never appeared), a `--window` that refused,
   an uncaught exception, each a line with time, socket, where, what.
   `tail -f` it when something silently does nothing.

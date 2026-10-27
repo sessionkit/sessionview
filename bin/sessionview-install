@@ -157,13 +157,15 @@ fi
 if command -v session >/dev/null 2>&1; then say PASS "session on PATH"
 else say WARN "session not on PATH - the sidebar lists tmux sessions without it, but no agent rows, so no agent menu (Message, Settle, ...), and no 'Start an agent' (uv tool install sessiontools)"; fi
 # neomutt - the messages tab (bin/sessionview-messages runs `neomutt -R`, exit 2 without
-# it). MISSING, not WARN: sessionview needs NeoMutt.
+# it). A WARN, not MISSING: that tab is made only when sessionmail, which is optional,
+# is installed, so sessionview runs without neomutt and the check still says ready.
+# (It was MISSING until 2026-10-28, when neomutt was ruled optional for the check.)
 if command -v neomutt >/dev/null 2>&1; then
   nv="$(neomutt -v 2>/dev/null | sed -n 's/^NeoMutt \([0-9]*\).*/\1/p' | head -1)"
   if neomutt -v 2>/dev/null | grep -q '+notmuch'; then say PASS "neomutt ${nv:-?} with notmuch"
   else say WARN "neomutt ${nv:-?} built without notmuch - the messages tab opens, with no sidebar (brew install neomutt)"; fi
 else
-  fail "neomutt - brew install neomutt (the messages tab)"
+  say WARN "neomutt not on PATH - the messages tab, which sessionview makes only when sessionmail is installed, cannot open (brew install neomutt)"
 fi
 # notmuch - the messages tab's sidebar queries Type: and Project:; unindexed, the Asks
 # rows are every mail to NAME+ask, with no error

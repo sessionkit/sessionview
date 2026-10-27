@@ -10,7 +10,7 @@ help:  ## list the targets; changes nothing
 	@echo "make check     check requirements only; change nothing"
 	@echo "make app       build and install the macOS Dock app"
 	@echo "make test      run the suite"
-	@echo "make build | release | push | publish | scan   releases (see the Makefile)"
+	@echo "make build | release | changelog | push | publish | scan   releases (see the Makefile)"
 
 install:
 	@bin/sessionview-install
@@ -41,7 +41,7 @@ test:
 # Releases. The ONE version lives in pyproject.toml; scripts/release.py bumps it
 # with uv and mirrors it into the plugin manifest(s) and __version__.
 BUMP ?= patch
-.PHONY: build release push publish
+.PHONY: build release changelog push publish
 
 build:  ## wheel + sdist into dist/
 	@uv build
@@ -50,6 +50,11 @@ build:  ## wheel + sdist into dist/
 # the project before the script starts.
 release:  ## bump (BUMP=patch|minor|major) or set (VERSION=X.Y.Z), then mirror, changelog, commit, tag
 	@python3 scripts/release.py $(or $(VERSION),$(BUMP))
+
+# The pending entries live in changelog.d/, one file each; the release collects
+# them into CHANGELOG.md. python3, not uv run, for the same reason as release.
+changelog:  ## print [Unreleased] as the next release will write it, changelog.d/ collated in; writes nothing
+	@python3 scripts/release.py --preview
 
 # Push the branch by name, then the ONE release tag by its full refname. Never a
 # push of all tags: that sends every local tag (fallback/*, export/*, ready/*).

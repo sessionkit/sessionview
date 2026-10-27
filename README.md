@@ -9,8 +9,11 @@ Install from PyPI: `uv tool install sessionview` (see [Install](#install)).
 
     sessionview
 
-In this terminal, that puts the sidebar on the left and the session
-`main` on the right; a private outer tmux holds the two panes.
+In this terminal, that puts the sidebar on the left and a tmux session
+on the right; a private outer tmux holds the two panes. The session is
+one tmux already has: your default assistant's, else the one you last
+attached, else the newest. Only when tmux has no session at all does
+sessionview make one, named `main`.
 `sessionview NAME` attaches the session NAME instead, which must exist.
 In any tmux client, `prefix H` opens the same sidebar as a popup.
 Every verb, its form and an example: [the sessionview command](docs/sessionview.md).
@@ -75,8 +78,12 @@ agents, or the menu): the names `session start` knows, pinned ones first.
   not start. An agent already running is never started twice.
 - *Agents have a home* — an agent's own file says where it wakes
   (`start: directory:`); a project's menu starts it in the project.
-- *Consent on first open* — Dreamcatcher asks once which agent to start
-  when it opens (a numbered pick, or never), and remembers.
+- *Consent on first open* — the first time it opens, sessionview asks
+  which agent to start whenever it opens, and remembers the answer. It
+  says *sessionview can start an agent for you each time it opens*, lists
+  your agents by number and asks `Which? (number, name, or "n")`. When it cannot get the
+  list it asks `Which agent? (a name, or "no" to never ask again)`. `n` or
+  `no` means never; `autostart_agent` in Settings changes it later.
 
 **Settings** — every setting, its default, its note and where its value
 comes from, in a small screen (project menu → Settings); the rows come
@@ -118,7 +125,8 @@ hand. Blink Shell on iPad is wanted and not yet connecting.
                          claude-code: short, safe driving skills with tools
 
 Paths resolve from the checkout (`SESSIONVIEW_ROOT`); state lives in
-`~/.local/state/sessionview` (`SESSIONVIEW_STATE`). Its direct dependencies:
+`~/.sessionkit/view/state` (`SESSIONVIEW_STATE`) and the log in
+`~/.sessionkit/view/log` (`SESSIONVIEW_LOG`). Its direct dependencies:
 [dependencies](docs/dependencies.md).
 
 ## Install
@@ -218,14 +226,13 @@ beside it. Each line says what puts it there and what takes it away.
   sessionview` drops this package's entries, and `uv cache prune` drops
   the ones nothing uses.
 - **Folders, each made by a verb you run:**
-  - `~/.local/state/sessionview/`: the state folder, made the first time
-    `sessionview` opens (or `sessionview session` or `sessionview
-    messages` runs). `SESSIONVIEW_STATE` moves it. An older release's
-    `~/.local/state/herd/` is renamed to it then, when only the old
-    one exists. In it:
+  - `~/.sessionkit/view/state/`: the state folder, mode 0700, made the
+    first time `sessionview` opens (or `sessionview session` or
+    `sessionview messages` runs). `SESSIONVIEW_STATE` names another
+    folder instead. Each file sessionview makes in it is private (mode
+    0600). In it:
     - `frame-PID.tty`, one while each frame is open. The frame deletes
       it when it closes; a frame killed outright can leave it behind.
-    - `sessionview.log`, the log ([Logs](#logs)).
     - `recent.tsv`, a line each time `sessionview session` opens a
       project, for the picker's order.
     - `picker-order`, when you flip the picker's sort.
@@ -237,6 +244,23 @@ beside it. Each line says what puts it there and what takes it away.
     - `sidebar-remote-HOST.json`, what the sidebar last saw from each
       host in your `remotes` setting.
     - `mutt/`, an rc file for each box `sessionview messages` opens.
+  - `~/.sessionkit/view/log/`: the log folder, mode 0700, made at the
+    same time. It holds `sessionview.log` ([Logs](#logs)).
+    `SESSIONVIEW_LOG` names another log file. When `SESSIONVIEW_STATE`
+    is set, the log is `sessionview.log` in that folder instead.
+  - `~/.local/state/sessionview/`: the state folder of releases before
+    this one. Nothing new is made there. On an upgrade, the first start
+    hard-links `recent.tsv`, `picker-order`, `sidebar-mail.txt` and each
+    file in `mutt/` into the new state folder. The old names are kept,
+    so the two names are one file, and a sidebar still running from
+    before the upgrade stays correct. The old folder is left in place,
+    with the old `sessionview.log`, `sidebar-mouse.log`, the frame pins
+    and the plugin and remote files, which are not carried over. One
+    line is added to the end of the old log, naming the new one. Each
+    start sets the old folder to mode 0700, so the old names are private
+    too; the files in it keep their modes. An
+    older release's `~/.local/state/herd/` is renamed to this folder
+    first, when only the herd one exists.
   - `~/Applications/SessionView.app`: `sessionview install --app` (or
     `make app` in a checkout), or in `DEST` when that is set. It is
     built in a temporary folder that is deleted after, and a rebuild
@@ -303,21 +327,25 @@ rm ~/.local/bin/sessionview ~/.local/bin/sessionview-* ~/.local/bin/tmux-sidebar
 ```
 
 That leaves what the verbs made, listed above. The Dock app, the
-plugin's cached copy and the state folder are sessionview's alone. To
-delete them:
+plugin's cached copy, and the state and log folders are sessionview's
+alone. To delete them:
 
 ```bash
 rm -rf "${HOME:?}/Applications/SessionView.app"
 rm -rf "${HOME:?}/.claude/plugins/cache/sessionview"
+rm -rf "${HOME:?}/.sessionkit/view/state" "${HOME:?}/.sessionkit/view/log"
 rm -rf "${HOME:?}/.local/state/sessionview"
 ```
+
+The last line is for an upgrade from an earlier release: it removes the
+old state folder, with the old log in it.
 
 uv's cache stays too, with the other things uv installed; `uv cache
 clean sessionview` drops this package's entries. The key bindings go
 when your tmux server next exits.
 
 The rest is your data: delete it by hand only if you want it gone.
-`~/.sessionkit/view/` holds your settings, and the kit's other packages
+`~/.sessionkit/view/settings/` holds your settings, and the kit's other packages
 keep theirs beside it in `~/.sessionkit/`.
 
 ## Keys and clicks
@@ -363,8 +391,9 @@ The look follows herdr's; its colours were matched from herdr's own window.
 - **Environment:** `SESSIONVIEW_CONFIG` (another file for yours),
   `SESSIONVIEW_FROM` (the name mail is sent as, else `mail_from`, else
   `$USER`; `sessionview from` prints the name in effect), `SESSIONVIEW_STATE`
-  (state, default `~/.local/state/sessionview`), `SESSIONVIEW_PLUGINS`
-  (another plugin directory).
+  (state, default `~/.sessionkit/view/state`), `SESSIONVIEW_LOG` (the log
+  file, default `~/.sessionkit/view/log/sessionview.log`),
+  `SESSIONVIEW_PLUGINS` (another plugin directory).
 - sessionview does not read the kit's settings cascade today, only these.
 
 Every file, variable and tmux option is in
@@ -374,19 +403,25 @@ and every key in
 
 ## Logs
 
-- `~/.local/state/sessionview/sessionview.log`: what went wrong, one
+- `~/.sessionkit/view/log/sessionview.log`: what went wrong, one
   entry each, starting with the time (a failed tmux call, an uncaught
   error with its traceback). Follow it with
-  `tail -f ~/.local/state/sessionview/sessionview.log` when a click
+  `tail -f ~/.sessionkit/view/log/sessionview.log` when a click
   seems to do nothing.
+- **After an upgrade:** the log of earlier releases,
+  `~/.local/state/sessionview/sessionview.log`, stays where it is and
+  is never moved. Its last line names the new log, and the new log's
+  first line names the old one.
 - **Levels:** `log_level` in your settings (or `$SESSIONVIEW_LOG_LEVEL`
   for one run). `error`, the default, logs only what went wrong.
   `timing` adds a line per click or key with its milliseconds, and each
   command that took 50 ms or more, so a slow click names its slow part.
   `debug` adds every command and every mouse event (what the old
   `sidebar-mouse.log` held).
-- It sits under `$SESSIONVIEW_STATE` when that is set. It is not rotated:
-  turn `timing` or `debug` on while you look, then back to `error`.
+- `$SESSIONVIEW_LOG` names another log file. Without it, a
+  `$SESSIONVIEW_STATE` that names another folder keeps the log there, as
+  `sessionview.log`. It is not rotated: turn `timing` or `debug` on
+  while you look, then back to `error`.
 - **Health:** `sessionview install --check`: exit 0 and `ready` when
   every requirement is present, exit 1 with each MISSING one named
   otherwise. It checks the machine, not a running sidebar.

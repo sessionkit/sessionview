@@ -116,9 +116,14 @@ sys.exit(1)' "$1"
 # that then fails to start. Empty output, missing command, any error: the
 # free-text question below still works, so this fails open like everything
 # else in this file.
+#
+# Each line is NAME, then a TAB and a mark (`claude<TAB>built in`), or the
+# NAME alone. Only the field before the first TAB is a name: the mark can hold
+# a space, and splitting the whole output on whitespace offered "built" and
+# "in" as agents.
 agent_list() {
   command -v session >/dev/null 2>&1 || return 0
-  session start --list-agents 2>/dev/null
+  session start --list-agents 2>/dev/null | awk -F '\t' '$1 != "" { print $1 }'
 }
 
 # Discard every byte waiting to be read on the terminal. ask() calls this once

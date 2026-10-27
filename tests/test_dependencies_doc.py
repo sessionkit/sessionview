@@ -151,6 +151,25 @@ class Page(unittest.TestCase):
                 with self.subTest(table=heading, name=name):
                     self.assertFalse(any(re.match(r"\| \[?%s\b" % re.escape(name), r) for r in rows))
 
+    def test_neomutt_is_optional_as_the_check_says(self):
+        # `--check` says WARN, not MISSING, for a missing neomutt: the messages
+        # tab is made only when sessionmail (optional) is installed. The page's
+        # class follows the check: an Optional row, nowhere under Required.
+        installer = read(os.path.join(support.BIN, "sessionview-install"))
+        self.assertIn('say WARN "neomutt not on PATH', installer)
+        self.assertNotRegex(installer, r'fail "neomutt')
+        head = self.page[:self.page.index("\n|")]
+        required = re.search(r"(?s)\*\*Required:\*\*(.*?)\n- \*\*", head).group(1)
+        self.assertNotIn("neomutt", required)
+        optional = re.search(r"(?s)\*\*Optional:\*\*(.*?)\n- \*\*", head).group(1)
+        self.assertIn("neomutt", optional)
+        rows = {h: [l for l in section(self.page, h).splitlines() if l.startswith("| [neomutt]")]
+                for h in ("Required", "Optional")}
+        self.assertEqual(len(rows["Optional"]), 1, rows)
+        self.assertEqual(rows["Required"], [])
+        self.assertIn("WARN", rows["Optional"][0])
+        self.assertNotIn("MISSING", rows["Optional"][0])
+
     def test_wheel_commands_are_named(self):
         with open(os.path.join(support.REPO, "pyproject.toml"), "rb") as f:
             scripts = tomllib.load(f)["project"]["scripts"]

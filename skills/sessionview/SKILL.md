@@ -13,6 +13,8 @@ description: >-
 One terminal window: a sidebar on the left (`bin/tmux-sidebar`), your tmux
 session on the right. The sidebar is the front door; `sessionview` opens it.
 
+Several agents in one seat? See the sessionkit skill's card, "Several agents in one seat".
+
 ## Commands (`bin/`)
 
 - `sessionview` — open the frame (sidebar + your session) in this terminal.

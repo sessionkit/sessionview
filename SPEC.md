@@ -12,9 +12,11 @@ command.
 This spec describes sessionview 0.2.0. Where this spec and the code
 disagree, the code is the bug.
 
-sessionview was called Herd before 0.2.0; the state dir moves once, on
-first run, from `~/.local/state/herd`. Its look and its plugin contract
-are borrowed from herdr, a different tool.
+sessionview was called Herd before 0.2.0. Its state dir is
+`~/.sessionkit/view/state`. On first run, an older state dir
+(`~/.local/state/herd`, renamed once to `~/.local/state/sessionview`)
+has its state files hard-linked into it and is left in place. Its look
+and its plugin contract are borrowed from herdr, a different tool.
 
 ## 1. Surfaces
 
@@ -22,12 +24,17 @@ are borrowed from herdr, a different tool.
   a private outer tmux (the "frame", one session per terminal) holds two
   panes. Left = the sidebar under a supervisor (`q` reloads, `Q` quits,
   a crash holds the error on screen and waits, SIGHUP = clean reload);
-  right = a tmux client attached to SESSION (default `main`) on its own
+  right = a tmux client attached to SESSION on its own
   server (`--sock`). The seam between them is a faint line; dragging it
   sets the sidebar's width, which is kept (`width`, and `fit` back to
   `fixed`). The frame dies with its terminal. A named SESSION must already
   exist on that server (else usage, exit 2; `sessionview session NAME`
-  makes one). The frame needs a terminal (stdin and stdout a tty). Run
+  makes one). With no SESSION, outside tmux, the frame lands in a session
+  the server already has, by one rule (`lib/landing.sh`): the session
+  holding the live default seat's pane (`session agent default`, its row
+  in `session list --json` on this server), else the most recently
+  attached, else the newest. It makes `main` only when the server has no
+  session at all. The frame needs a terminal (stdin and stdout a tty). Run
   inside tmux it takes over the caller's OWN client (`detach-client -E`)
   and no other: the caller's tty must be its pane's, and exactly one client
   must be on a session holding that pane's window (a session group or a
@@ -59,9 +66,12 @@ are borrowed from herdr, a different tool.
    ● deploy                          dim, with its sessions.
  +                                <- new: open a SESSION (picker)
  agents           all · grouped   <- the seats heading: two toggles
- ◐ webapp-a1     opus4.1  41%     <- SEATS: glyph, name; model and context
- ● @build-host worker-3   -          at the right; "@host " in front of a
-                                     remote seat
+ ◐ webapp-a1    opus4.1       41% <- SEATS: glyph, name; model, idle
+ ● api-b2       opus4.1  52m  12%    minutes (idle seats only) and
+ ● @build-host worker-3              context at the right; "@host "
+                                     in front of a remote seat. A name
+                                     too long for the row is cut with
+                                     "…"; the right side stays
    +3 more                        <- when they do not fit
 ```
 
@@ -76,7 +86,9 @@ defaults, not fixed. Rules:
 - **The ready badge** (`{ready}` in `project_format`): the number of
   ready tags waiting on the project's repo, then `ready_glyph` (an egg by
   default). A click on it opens the project's `ready_window` tab (default
-  `git`, lazygit).
+  `git`, lazygit). The project's repo is the one `sessionview-session
+  --print` names on the viewed server and store, remembered per store: a
+  store switch never counts another store's same-named repo.
 - The selected row is **bold and brighter** (`selected_fg`,
   `selected_bold`); the tell is the text, not a background band.
 - **Grouped** (`group_by`) groups seats contiguously, in project-list
@@ -89,6 +101,15 @@ defaults, not fixed. Rules:
   fit, the last row is `+N more`, never a silent cut.
 - **Sort** (`sort`, default rank then idle time): blocked and waiting <
   busy < idle < shell.
+- **Idle minutes** (`{idle_m}`, left of the context): only an idle seat
+  shows a time, its whole minutes (`52m`). Idle is status `idle`, or
+  `shell`: a seat at its prompt while a background shell lives. `idle_s`
+  is the time in the current state, so a seat busy for an hour shows
+  nothing.
+  Dim grey; orange and bold from `agent_idle_orange` (45); red and bold
+  from `agent_idle_red` (60); blinking from `agent_idle_blink`, off (0) by
+  default. The cell is always four columns, blank or not, so the context
+  stays right-aligned row under row.
 - **Glyphs**: `■` red blocked/waiting, `◐` yellow busy, `●` green idle,
   `○` dim shell. The same glyph appears in the tab bar for a window that
   holds a seat (rollup), via the window options `@sessionview_glyph` /
@@ -135,9 +156,16 @@ defaults, not fixed. Rules:
   `editor` (the README), and `shell` (the fallback when nothing else
   applies). An entry's `when` decides whether it applies to a project;
   some are picker-only. Every tab is a shell with the tool typed in.
-  Repo = `tm project get NAME`'s git url as `~/Code/<url with : as />`
-  minus `.git`, else a `~/Code/*/*/NAME` glob, else a repo found under
-  `project_dirs`, else none. `--plain` / `SESSIONVIEW_PROFILE=0` = one
+  Repo resolves in the store the project was opened from. When `tm
+  project get NAME`, asked from that store, gives a git url, the repo is
+  the clone whose `origin` matches it (ssh://, https:// and `host:path`
+  forms match, with or without `.git`), looked for at `~/Code/<url with :
+  as />` minus `.git`, then by the url's last part and by NAME in
+  `~/Code/*/*` and under `project_dirs`. No clone matches: the repo at
+  that first path (it is named by the store's url, whatever its origin
+  says), else no repo, never a same-named repo from another store. With
+  no url (no taskmaster, or no such project), a `~/Code/*/*/NAME` glob,
+  else a repo found under `project_dirs`, else none. `--plain` / `SESSIONVIEW_PROFILE=0` = one
   shell.
 - **Tab bar**: click selects; drag reorders (`MouseDrag1Status
   swap-window -d -t=`); `+` opens the new-tab picker; a dim `×` closes
@@ -258,8 +286,10 @@ A store's or a project's `.sessionview` may reorder tabs and add plain
 ones, but never sets a `command`: commands come only from the template
 and your home file. Keys are described in `config/README.md`. One TAB
 in a format = "right-align the rest". Rows and layout live in config,
-and so do two colours (`selected_fg`, `popup_bg`); the rest do not yet
-(the glyph palette is in the sidebar, the tab bar's in the tmux confs).
+and so do two colours (`selected_fg`, `popup_bg`) and the idle
+thresholds (`agent_idle_orange`, `agent_idle_blink`, `agent_idle_red`,
+in minutes); the rest do not yet (the glyph palette is in the sidebar,
+the tab bar's in the tmux confs).
 `get KEY --where` names the file that decided.
 
 ## 7. Known limits

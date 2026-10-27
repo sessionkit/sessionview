@@ -6,7 +6,8 @@
 #        sessionview --help | --version
 #
 #   sessionview [SESSION]  the frame: sidebar on the left, SESSION attached on
-#                    the right (default main; a named SESSION must exist).
+#                    the right (default: one the server has, else main;
+#                    a named SESSION must exist).
 #                    --sock names its tmux server; --width, columns.
 #   sessionview config     settings: no verb opens the screen (get/set/list ...)
 #   sessionview session NAME    open a project session with its standard tabs
@@ -22,7 +23,7 @@
 #
 # Also: prefix H in any tmux client opens the sidebar as a popup.
 # Config: ~/.sessionkit/view/settings/view.json over the shipped config/config.json.
-# State: ~/.local/state/sessionview (SESSIONVIEW_STATE=).
+# State: ~/.sessionkit/view/state (SESSIONVIEW_STATE=). Log: ~/.sessionkit/view/log (SESSIONVIEW_LOG=).
 # (end of usage)
 # Ghostty was stripped out so this works in any terminal with only tmux. It
 # started as ghostty-herd; the Ghostty launcher, the split hook and cmd+d
@@ -66,7 +67,7 @@ case "${1:-}" in
       "$SESSIONVIEW_ROOT/bin/tmux-sidebar" --help >&2
       exit 2
     fi
-    SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
+    . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
     # The supervisor: q = exit 0 = reload (picks up an edited tmux-sidebar or
     # sidebar.toml), Q = exit 3 = quit. A CRASH IS NOT A QUIT: any other exit
     # holds the error on screen and waits (one undefined name once took the
@@ -86,7 +87,9 @@ esac
 # (--sock, else this tmux's own server when run inside one, else default):
 # a typo or a probe word must not mean "open a frame on a new session named
 # after it". Read-only check; on a miss, usage and exit 2, nothing touched.
-# A new named session is `sessionview session NAME`. No word = main, as before.
+# A new named session is `sessionview session NAME`. No word: the frame picks
+# a session the server already has, and makes main only when it has none
+# (lib/landing.sh).
 word=""; sock=""; prev=""
 for a in "$@"; do
   case "$prev" in --sock) sock="$a"; prev=""; continue;; --width) prev=""; continue;; esac
@@ -110,5 +113,5 @@ if [ -n "$word" ]; then
   # the frame looks where this checked: inside tmux, the caller's own server
   [ -n "$extra" ] && set -- "$@" --sock "$sock"
 fi
-SESSIONVIEW_STATE="${SESSIONVIEW_STATE:-$HOME/.local/state/sessionview}"; . "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
+. "$SESSIONVIEW_ROOT/lib/state.sh"; . "$SESSIONVIEW_ROOT/lib/python.sh"; export SESSIONVIEW_ROOT SESSIONVIEW_STATE
 exec "$SESSIONVIEW_ROOT/bin/sessionview-frame" "$@"

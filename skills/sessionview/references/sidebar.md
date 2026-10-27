@@ -34,7 +34,7 @@ tab (lazygit). Change the look with `ready_glyph`, `ready_format` and
   keystrokes. The agent answers on its next turn.
 - A failed action shows its error's first line, unclipped, in a `failed`
   box. Failed tmux calls and crashes go to
-  `~/.local/state/sessionview/sessionview.log`.
+  `~/.sessionkit/view/log/sessionview.log`.
 
 ## Store view
 

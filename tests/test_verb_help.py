@@ -367,7 +367,7 @@ class RoutedVerbsNeedNoInheritedEnv(unittest.TestCase):
 
     @staticmethod
     def state(box):
-        return os.path.join(box.home, ".local", "state", "sessionview")
+        return os.path.join(box.home, ".sessionkit", "view", "state")
 
     def test_each_routed_verb_works(self):
         cases = {
