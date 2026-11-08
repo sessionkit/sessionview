@@ -161,9 +161,10 @@ labels.
   `session start --list-agents` after. The live
   agents list sorts a running agent whose name is pinned first, in pin
   order, whatever its project, status or idle; the rest keep the `sort`
-  order. Grouped, the pinned rows sit above every group. `hide` and the
-  current filter still apply first. Empty by default; `["alice", "bob"]`
-  keeps alice and bob on top.
+  order. Grouped, the pinned rows sit above every group. `hide` applies
+  first, and a pinned agent shows under every agents scope (all, store,
+  project). Empty by default; `["alice", "bob"]` keeps alice and bob on
+  top.
 - `code_nvim` - sessionview-session starts nvim in the code window, listening on
   show-me's socket; off = a shell.
 - `agent_command` - what "Start an agent" runs: an argv list, `{project}`

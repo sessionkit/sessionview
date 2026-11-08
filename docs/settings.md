@@ -124,7 +124,7 @@ tabs; [config/README.md][config-readme] describes each field.
 | --- | --- | --- | --- |
 | `terminal` | string | `""` | The terminal the dock app opens: `iterm`, `ghostty` or `terminal`. `""` works it out. |
 | `fullscreen` | boolean | `false` | The dock app opens sessionview full screen. |
-| `pane_menu` | boolean | `false` | Right-click on an agent's pane opens the agent pane menu. It replaces your own tmux right-click menu. |
+| `pane_menu` | boolean | `false` | Right-click or Option + right-click on an agent's pane opens the agent pane menu, even when the program there uses the mouse. It replaces both your tmux right-click bindings. |
 | `mail_from` | string | `""` | The name sessionview's mail is sent as. `""`: the next in line, on the [configuration page][mail-sender]. |
 | `pane_menu_from` | string | `""` | The older name for `mail_from`, read when `mail_from` is empty. |
 

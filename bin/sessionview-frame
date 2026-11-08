@@ -119,12 +119,16 @@ FRESH_WIN=""
 # global config is untouched (a normal tmux session keeps its bar at the
 # bottom).
 sh -c 'S="$1"; L="$3"; tmux() { command tmux -L "$L" "$@"; }; . "$2"' sh "$SESSION" "$SESSIONVIEW_ROOT/tmux/frame.conf" "$SOCK"
-# the agent pane menu (right-click an agent's pane: Speak / Continue / ...), IF
-# the user turned it on. Opt-in: one bind-key is global to the server and
-# replaces their own right-click menu. Sourced into the running server, so it
-# works whether or not tmux was already up. Fails open, like the rest of the
-# frame's setup. See tmux/agent-menu.conf.
-if [ "$("$SESSIONVIEW_ROOT/bin/sessionview-config" get pane_menu 2>/dev/null)" = true ]; then
+# the agent pane menu (right-click or Option + right-click an agent's pane:
+# Speak / Continue / ...), IF the user turned it on. Opt-in: its two bind-keys
+# are global to the server and replace both of the user's own right-click
+# bindings (MouseDown3Pane, M-MouseDown3Pane). Sourced into the running
+# server, so it works whether or not tmux was already up. Fails open, like the
+# rest of the frame's setup. See tmux/agent-menu.conf. Read once: the frame's
+# own server acts on the same answer below (the Option + right-click
+# pass-through).
+PANE_MENU="$("$SESSIONVIEW_ROOT/bin/sessionview-config" get pane_menu 2>/dev/null || true)"
+if [ "$PANE_MENU" = true ]; then
   "$TMUX_BIN" -L "$SOCK" source-file "$SESSIONVIEW_ROOT/tmux/agent-menu.conf" 2>/dev/null || true
 fi
 # the chosen agent, if the user has one - asked once, remembered, started in
@@ -194,6 +198,13 @@ o set -w -t "=$F:0" pane-active-border-style "fg=#3a3f4d,bg=#21252e"
 o set -w -t "=$F:0" pane-border-lines single
 o bind-key -T root MouseDown1Border "resize-pane -M"
 o bind-key -T root MouseDrag1Border "resize-pane -M"
+# with pane_menu on, an Option + right-click on the client pane goes through to
+# your tmux and its agent menu; the frame's other panes keep the binding this
+# server had. Here, after new-session: before it this server may not exist.
+# Off, nothing is touched. Fails open. See lib/pane-menu.sh.
+if [ "$PANE_MENU" = true ]; then
+  { . "$SESSIONVIEW_ROOT/lib/pane-menu.sh" && sv_frame_option_forward "$FRAME_SOCK"; } >/dev/null 2>&1 || true
+fi
 MAIN="$(o split-window -h -P -F '#{pane_id}' -t "$SIDE" -e "TMUX=" \
   "exec \"$TMUX_BIN\" -L \"$SOCK\" attach -t \"=$SESSION\"")"
 # the frame publishes its own panes, so the sidebar process (which cannot see

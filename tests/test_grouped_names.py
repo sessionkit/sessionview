@@ -185,8 +185,8 @@ class GroupedOrder(unittest.TestCase):
                 self.assertEqual(
                     self.order(self.rows(), grouped=grouped, within=False),
                     ["sessionview+engineer", "sessionview+sv-104.worker",
-                     "sessionview+sv-92.worker", "sessionview+sv-92.foreman",
-                     "sessionview+super", "sessionview+sv-104.foreman"])
+                     "sessionview+sv-92.worker", "sessionview+sv-104.foreman",
+                     "sessionview+sv-92.foreman", "sessionview+super"])
 
     def test_mixed_group_stripped_rows_first_then_todays_order(self):
         # Q2: only rows that were stripped sort by short
@@ -302,9 +302,10 @@ class Render(unittest.TestCase):
         got = self.once()
         self.assertEqual(sorted(got), sorted(r["name"] for r in self.ROWS))
         self.assertNotIn("super", got)
-        # today's order: rank (blocked, busy, idle, shell), then idle_s
+        # today's order: rank (blocked, busy, idle), then idle_s; a seat
+        # saying `shell` is idle, so the idlest seat (super, 5000s) is last
         self.assertEqual(got[0], "sessionview+engineer")
-        self.assertEqual(got[-1], "sessionview+sv-104.foreman")
+        self.assertEqual(got[-1], "sessionview+super")
 
     def test_selected_row_draws_the_short_name_before_its_dots(self):
         # the selected row rebuilds its label with the `⋯` menu dots after it;

@@ -51,9 +51,10 @@ to=""
 # the session box: the last +field, :field or .field that is 8 hex
 for cand in "${title##*+}" "${title##*:}" "${title##*.}"; do
   if printf '%s' "$cand" | grep -qE '^[0-9a-f]{8}$'; then
-    for d in "$HOME/.mail/agents/$cand"*/; do
-      [ -d "$d" ] && { to="$(basename "$d")"; break; }
-    done
+    # sessionmail names the box: the first `session ID` row of `message box
+    # list`. Where its mail root is, is sessionmail's to know, never ours to
+    # spell. A refusal or no row leaves `to` empty: the seat address below.
+    to="$("$message_bin" box list "$cand*" --all 2>/dev/null | awk '$1=="session"{print $2; exit}' || true)"
     break
   fi
 done

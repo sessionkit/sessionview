@@ -1,9 +1,9 @@
 """bin/tmux-sidebar: the {idle_m} cell, an idle seat's minutes left of {ctx}.
 
-Only an idle seat (status `idle`, or `shell`: at its prompt with a
-background shell) shows a time: `idle_s` is the time in the
-current state, so a seat busy, waiting or blocked for an hour has a large
-`idle_s` too and must show nothing. An idle seat shows dim grey minutes;
+Only an idle seat (seat_word says idle: status `idle`, or `shell`, at its
+prompt with a background shell; see tests/test_seat_word.py) shows a time:
+`idle_s` is the time in the current state, so a seat busy, waiting or
+blocked for an hour has a large `idle_s` too and must show nothing. An idle seat shows dim grey minutes;
 orange and bold from agent_idle_orange (45), red and bold from agent_idle_red
 (60), and blinks from agent_idle_blink only when that is set (it is 0, off,
 by default). The cell is always the same width, so on a 34-column sidebar

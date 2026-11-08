@@ -97,6 +97,33 @@ class TitleIsLiteral(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("sent 'hello' -> super.demo (from tester)", r.stdout)
 
+    def sends_logged(self, box_list_rows):
+        """A message shim whose `box list` prints BOX_LIST_ROWS and whose
+        `send` logs its address; returns (result, the logged lines)."""
+        log = os.path.join(self.home, "message.log")
+        self.message_shim(
+            f'echo "$*" >> {shlex.quote(log)}\n'
+            f'[ "$1 $2" = "box list" ] && printf %s {shlex.quote(box_list_rows)}\n'
+            'exit 0\n')
+        self.title("x super.demo+0bb870c2")
+        r = self.send()
+        with open(log) as f:
+            return r, f.read().splitlines()
+
+    def test_a_short_sid_goes_to_the_session_box_sessionmail_names(self):
+        sid = "0bb870c2-1111-2222-3333-444455556666"
+        r, calls = self.sends_logged(f"store fx-corp\nsession {sid}\n-- 2 shown\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("box list 0bb870c2* --all", calls)
+        self.assertTrue(any(c.startswith(f"send {sid} ") for c in calls), calls)
+        self.assertIn("sent 'hello' -> session 0bb870c2 (from tester)", r.stdout)
+
+    def test_no_session_row_falls_back_to_the_seat(self):
+        r, calls = self.sends_logged("-- 0 shown\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(any(c.startswith("send super.demo ") for c in calls), calls)
+        self.assertIn("sent 'hello' -> super.demo (from tester)", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

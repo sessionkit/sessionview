@@ -226,10 +226,17 @@ sys.exit(0)    # anything else (`tm task list` typed into a tab): quietly nothin
 '''
 
 _MESSAGE_SHIM = r'''#!{python}
-# message, for the suite: `path NAME` answers for the fixture boxes only.
+# message, for the suite: `path NAME` answers for the fixture boxes only;
+# `path --notmuch-config` answers the fixtures' "notmuch_config", else exit 2
+# (no profile, or a sessionmail older than 0.3.3, which knows no such flag).
 import json, sys
-BOXES = json.load(open({fixtures!r}))["boxes"]
+DATA = json.load(open({fixtures!r}))
+BOXES = DATA["boxes"]
 a = sys.argv[1:]
+if a[:2] == ["path", "--notmuch-config"]:
+    if DATA.get("notmuch_config"):
+        print(DATA["notmuch_config"]); sys.exit(0)
+    print("message path: no notmuch profile", file=sys.stderr); sys.exit(2)
 if a[:1] == ["path"]:
     if len(a) > 1 and a[1] in BOXES:
         print(BOXES[a[1]]); sys.exit(0)

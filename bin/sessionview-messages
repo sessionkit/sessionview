@@ -8,7 +8,7 @@
 # named `messages` in both store and project sessions. Three facts, each
 # measured:
 #   the folder   `message path [SLUG/]PROJECT` (sessionmail 2454f6f) prints
-#                the project's maildir, e.g. ~/.mail/agents/acme/myproject;
+#                the project's maildir, wherever sessionmail keeps it;
 #                exit 2 when there is none.
 #   the viewer   `neomutt -R -F RC -f FOLDER`. -R (read-only) is not optional:
 #                without it, reading a message moves it new/ -> cur/ and the
@@ -41,6 +41,9 @@
 # the rows are every mail to PROJECT+ask, replies too, and the rc says so;
 # without notmuch, or a folder notmuch does not hold, the tab is the one
 # folder as before and the sidebar is hidden. --print names the reason.
+# notmuch here, and neomutt's (nm_config_file), read sessionmail's notmuch
+# profile when `message path --notmuch-config` names one (sessionmail 0.3.3);
+# an older sessionmail, or no profile (exit 1 or 2), is notmuch's own default.
 # Ctrl-o (sidebar-open) is the macOS tty's `discard` char and never reaches
 # neomutt; `stty discard undef` runs below, in the shell that owns the tty
 # (measured by the first user of this layout: a backtick inside
@@ -92,19 +95,26 @@ case "$FOLDER" in *[\"\`\\\$]*|*[[:cntrl:]]*)
 [ -d "$FOLDER" ] || { echo "sessionview-messages: $BOX: $FOLDER is not a directory" >&2; exit 2; }
 # The sidebar's rows: per project, so written here, not in config/neomuttrc.
 SIDEBAR=""; SIDEBAR_WHY=""
-if command -v notmuch >/dev/null 2>&1; then
-  DB="$(notmuch config get database.path 2>/dev/null)"
+NMCFG="$(message path --notmuch-config 2>/dev/null)" || NMCFG=""
+nm() { notmuch ${NMCFG:+"--config=$NMCFG"} "$@"; }
+NM="notmuch${NMCFG:+ --config=$NMCFG}"   # the words in a fix line
+case "$NMCFG" in *[\"\`\\\$]*|*[[:cntrl:]]*)
+  SIDEBAR_WHY="sessionmail's notmuch config refused: its path holds a \" \` \\ \$ or control character, which the rc would run or break on";; esac
+if [ -n "$SIDEBAR_WHY" ]; then :
+elif command -v notmuch >/dev/null 2>&1; then
+  DB="$(nm config get database.path 2>/dev/null)"
   if [ -z "$DB" ]; then SIDEBAR_WHY="notmuch has no database.path"
   else case "$FOLDER/" in
     "$DB"/*)
-      if [ "$(notmuch config get index.header.Type 2>/dev/null)" = Type ] &&
-         [ "$(notmuch config get index.header.Project 2>/dev/null)" = Project ]; then
+      if [ "$(nm config get index.header.Type 2>/dev/null)" = Type ] &&
+         [ "$(nm config get index.header.Project 2>/dev/null)" = Project ]; then
         Q="Type:ask and (to:\\\"$NAME+ask\\\" or Project:\\\"$NAME\\\")"
       else
         Q="to:\\\"$NAME+ask\\\""
-        SIDEBAR_WHY="notmuch does not index Type and Project, so Asks is every mail to $NAME+ask, replies too - notmuch config set index.header.Type Type; notmuch config set index.header.Project Project; notmuch reindex '*'"
+        SIDEBAR_WHY="notmuch does not index Type and Project, so Asks is every mail to $NAME+ask, replies too - $NM config set index.header.Type Type; $NM config set index.header.Project Project; $NM reindex '*'"
       fi
-      SIDEBAR="$(printf 'set nm_default_url="notmuch://%s"\nset nm_query_type=messages\nset virtual_spoolfile=no\nnamed-mailboxes "%s" "%s"\nvirtual-mailboxes "Asks" "notmuch://?query=%s"\nvirtual-mailboxes "Asks · threads" "notmuch://?type=threads&query=%s"\n' "$DB" "$NAME" "$FOLDER" "$Q" "$Q")";;
+      SIDEBAR="$(printf 'set nm_default_url="notmuch://%s"\nset nm_query_type=messages\nset virtual_spoolfile=no\nnamed-mailboxes "%s" "%s"\nvirtual-mailboxes "Asks" "notmuch://?query=%s"\nvirtual-mailboxes "Asks · threads" "notmuch://?type=threads&query=%s"\n' "$DB" "$NAME" "$FOLDER" "$Q" "$Q")"
+      [ -z "$NMCFG" ] || SIDEBAR="set nm_config_file=\"$NMCFG\""$'\n'"$SIDEBAR";;
     *) SIDEBAR_WHY="$FOLDER is not under notmuch database.path $DB";;
   esac; fi
 else SIDEBAR_WHY="no notmuch on PATH (brew install notmuch)"; fi

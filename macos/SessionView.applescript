@@ -56,11 +56,19 @@ if term is "iterm" then
 	end tell
 end run"
 	try
+		-- Compiling that string LOOKS iTERM UP BY NAME, and on a Mac without
+		-- iTerm the lookup does not fail: it puts up the "Where is iTerm?"
+		-- chooser and waits on it with no time limit, so the alert below was
+		-- never reached and the app hung. So ask first, with a check that
+		-- cannot prompt (itermFound: shell only, no application reference),
+		-- and when iTerm is not there, go straight to the alert.
+		if not itermFound() then error "iTerm was not found on this Mac." number -10814
 		run script itermScript with parameters {cmd, wantFull}
 	on error errMsg number errNum
 		if errNum is -128 then error number -128
 		-- e.g. `terminal: iterm` in the config on a Mac where iTerm is not
-		-- installed: the string does not compile here. Say so; never fail mute.
+		-- installed (itermFound said no), or the string failing to compile or
+		-- run. Say so; never fail mute.
 		display alert "SessionView cannot open iTerm" message "iTerm is the terminal chosen for sessionview, but it could not be run:
 " & errMsg & " (" & errNum & ")
 
@@ -241,4 +249,22 @@ on isInstalled(appName)
 		return false
 	end try
 end isInstalled
+
+-- Is iTerm on this Mac at all? Asked before the iTerm string is compiled,
+-- because compiling it without iTerm prompts instead of failing. Nothing here
+-- is an AppleScript reference to the app, so nothing here can put up a
+-- chooser: is it running, is it in either Applications folder, and does
+-- LaunchServices know its bundle id (a copy kept anywhere else). That last is
+-- asked through JavaScript for Automation in a child process, a plain lookup
+-- that returns nothing when the app is missing. Spotlight (mdfind) is not
+-- used: with indexing off it finds no app at all.
+on itermFound()
+	set js to "ObjC.import('AppKit'); $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier('com.googlecode.iterm2').isNil() ? 'no' : 'yes'"
+	try
+		do shell script "/usr/bin/pgrep -x iTerm2 >/dev/null || test -d /Applications/iTerm.app || test -d \"$HOME/Applications/iTerm.app\" || test \"$(/usr/bin/osascript -l JavaScript -e " & quoted form of js & " 2>/dev/null)\" = yes"
+		return true
+	on error
+		return false
+	end try
+end itermFound
 

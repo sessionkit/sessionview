@@ -7,8 +7,7 @@ shows the most urgent of its agents.
 
 - `■` red: blocked or waiting
 - `◐` yellow: busy
-- `●` green: idle
-- `○` dim: shell
+- `●` green: idle, at its prompt (also when a background shell runs)
 
 In the pickers, `●` marks a tab or session already open (an agent already
 running) and `○` one that is not.

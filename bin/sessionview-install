@@ -168,13 +168,17 @@ else
   say WARN "neomutt not on PATH - the messages tab, which sessionview makes only when sessionmail is installed, cannot open (brew install neomutt)"
 fi
 # notmuch - the messages tab's sidebar queries Type: and Project:; unindexed, the Asks
-# rows are every mail to NAME+ask, with no error
+# rows are every mail to NAME+ask, with no error. Asked of sessionmail's notmuch profile
+# when `message path --notmuch-config` names one (sessionmail 0.3.3), as the tab does;
+# no message, an older one or no profile: notmuch's own default config.
 if command -v notmuch >/dev/null 2>&1; then
-  if [ "$(notmuch config get index.header.Type 2>/dev/null)" = Type ] &&
-     [ "$(notmuch config get index.header.Project 2>/dev/null)" = Project ]; then
-    say PASS "notmuch indexes Type and Project"
+  NMCFG="$(message path --notmuch-config 2>/dev/null)" || NMCFG=""
+  NM="notmuch${NMCFG:+ --config=$NMCFG}"
+  if [ "$(notmuch ${NMCFG:+"--config=$NMCFG"} config get index.header.Type 2>/dev/null)" = Type ] &&
+     [ "$(notmuch ${NMCFG:+"--config=$NMCFG"} config get index.header.Project 2>/dev/null)" = Project ]; then
+    say PASS "notmuch indexes Type and Project${NMCFG:+ ($NMCFG)}"
   else
-    say WARN "notmuch does not index Type and Project - the Asks rows show every mail to NAME+ask:  notmuch config set index.header.Type Type; notmuch config set index.header.Project Project; notmuch reindex '*'"
+    say WARN "notmuch${NMCFG:+ ($NMCFG)} does not index Type and Project - the Asks rows show every mail to NAME+ask:  $NM config set index.header.Type Type; $NM config set index.header.Project Project; $NM reindex '*'"
   fi
 else say WARN "notmuch not on PATH - the messages tab has no sidebar (brew install notmuch)"; fi
 # optional

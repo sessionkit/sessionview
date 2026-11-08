@@ -13,6 +13,52 @@ release moves them in here, under the new version.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-08
+
+### Added
+
+- The agents heading's left toggle has three scopes, and a click cycles
+  them: `all`, `store` and `project`. The new `store` scope shows the
+  agents of the current store: those in one of its projects or in the
+  store's own session. `project` is the old `current`, renamed to say
+  what it shows. A pinned agent (`pinned_agents`) now shows under every
+  scope, so narrowing the list never hides it; `hide` still applies
+  first. The sidebar still starts in `all`.
+- Option + right-click opens the agent pane menu too, when `pane_menu` is
+  on. In the session view window it reaches your tmux, so the menu opens
+  there as well.
+
+### Changed
+
+- sessionview no longer spells where mail lives. The agent menu finds a
+  pane's session box by asking sessionmail (`message box list SID* --all`,
+  its `session` row) instead of looking under `~/.mail/agents/`. The
+  messages tab and `sessionview-install --check` ask notmuch through
+  sessionmail's own notmuch profile when `message path --notmuch-config`
+  names one (sessionmail 0.3.3), and neomutt reads the same file
+  (`nm_config_file`). With an older sessionmail, or no profile, notmuch's
+  default config is used, as before. This is for sessionmail 0.3.3, whose
+  fresh hosts keep mail under `~/.sessionkit/mail/stores/`.
+
+### Fixed
+
+- The `project` scope (the old `current`) no longer shows a remote
+  host's agent whose pane id happens to match a local pane in the
+  selected project.
+- The Dock app no longer waits forever on a "Where is iTerm?" prompt when
+  the config names iTerm and iTerm is not installed. It now checks for
+  iTerm first, and when iTerm is missing it says so in a dialog and stops.
+- With `pane_menu` on, a right-click on an agent's pane opens the menu
+  even when the program there uses the mouse, as Claude Code does. Before,
+  the click went to the program and no menu opened.
+- An idle agent draws the green `●` and sorts with the other idle agents,
+  also when a background shell runs beside it. Claude Code reports such an
+  agent as `shell`, so before this most idle agents drew a dim grey `○` and
+  sorted after every idle one, and their project rows and tab-bar glyphs
+  were grey too. The glyph, the sort, the project and tab glyphs and the
+  idle minutes now share one reading of an agent's state, so they always
+  agree. An agent waiting on a prompt still draws the red `■` at the top.
+
 ## [0.3.2] - 2026-10-28
 
 ### Added

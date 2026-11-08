@@ -93,25 +93,41 @@ defaults, not fixed. Rules:
   `selected_bold`); the tell is the text, not a background band.
 - **Grouped** (`group_by`) groups seats contiguously, in project-list
   order; grouped by session, remote seats group as `host:session`.
-- **all | current** (the heading's left toggle): current = the seats
-  whose pane is in the selected project.
+- **all | store | project** (the heading's left toggle; a click cycles
+  them, and the word names the scope):
+  - all = every seat;
+  - store = the seats whose pane is in one of the current store's
+    projects, or in the store's own session. Outside a store (no store
+    owns the viewed server, or the selected project is not one of its
+    projects) it shows every seat for now;
+  - project = the seats whose pane is in the selected project.
+  A pinned seat (`pinned_agents`) shows under every scope; `hide` still
+  applies first, so a hidden status stays hidden. The sidebar starts in
+  all.
 - The selected project row carries its menu as `⋯` at the right.
 - **Overflow**: the seats block starts at half height only when that
   fits; otherwise it creeps up under the projects; if it still cannot
   fit, the last row is `+N more`, never a silent cut.
+- **A seat's word** (`seat_word`), the ONE test the glyph, the sort, the
+  rollups and the idle minutes ask: `waiting` / `blocked` from `status`
+  first (`state` reads them as idle); else `state` (`busy`; `idle` and
+  `idle with children` are idle); else, from a feed with no `state`,
+  `status` with `shell` read as idle. Claude Code writes `shell` for a
+  seat at its prompt whenever a background shell lives, so most idle
+  seats say `shell`. A word with no glyph draws `?` and sorts last.
 - **Sort** (`sort`, default rank then idle time): blocked and waiting <
-  busy < idle < shell.
+  busy < idle.
 - **Idle minutes** (`{idle_m}`, left of the context): only an idle seat
-  shows a time, its whole minutes (`52m`). Idle is status `idle`, or
-  `shell`: a seat at its prompt while a background shell lives. `idle_s`
+  shows a time, its whole minutes (`52m`). Idle is the seat's word
+  `idle` (above). `idle_s`
   is the time in the current state, so a seat busy for an hour shows
   nothing.
   Dim grey; orange and bold from `agent_idle_orange` (45); red and bold
   from `agent_idle_red` (60); blinking from `agent_idle_blink`, off (0) by
   default. The cell is always four columns, blank or not, so the context
   stays right-aligned row under row.
-- **Glyphs**: `■` red blocked/waiting, `◐` yellow busy, `●` green idle,
-  `○` dim shell. The same glyph appears in the tab bar for a window that
+- **Glyphs**: `■` red blocked/waiting, `◐` yellow busy, `●` green idle.
+  The same glyph appears in the tab bar for a window that
   holds a seat (rollup), via the window options `@sessionview_glyph` /
   `@sessionview_glyph_fg`, written by the sidebar on change and cleared
   on exit (`tab_glyphs`).
@@ -173,15 +189,26 @@ defaults, not fixed. Rules:
   it off.
 - **Right-click** → the menu of §5. Menus, prompts and confirms draw
   **inside the sidebar** (a tmux menu would appear in the other pane).
-- **The agent pane menu** is a different thing: right-click in one of
-  your OWN panes (not the sidebar) that holds an agent, and tmux's pane
-  menu gains Speak / Continue / Read Clipboard / Park / Succeed → that
-  agent, each a subject-only mail (`bin/tmux-send-agent`, via
-  sessionmail's `message send`). It is a tmux `bind-key` in
-  `tmux/agent-menu.conf`, global to the server, so it is **opt-in**
-  (`pane_menu`, default false): turning it on replaces your own
-  right-click menu. The frame loads it at every launch when it is on;
-  without the frame, one `source-file -q` line in `~/.tmux.conf`.
+- **The agent pane menu** is a different thing: right-click or Option +
+  right-click in one of your OWN panes (not the sidebar) that holds an
+  agent, and tmux's pane menu gains Speak / Continue / Read Clipboard /
+  Park / Succeed → that agent, each a subject-only mail
+  (`bin/tmux-send-agent`, via sessionmail's `message send`). An agent's
+  pane is one whose title is `<glyph> <address>`. Both keys
+  (`MouseDown3Pane`, `M-MouseDown3Pane`) are bound from ONE menu in
+  `tmux/agent-menu.conf`. The plain right-click tests for an agent's
+  pane BEFORE the program's mouse mode (`mouse_any_flag`): on an agent's
+  pane it opens the menu even when the program uses the mouse, as Claude
+  Code does; on any other pane such a program still gets the click, and
+  a mode other than copy/view still gets it too. Option + right-click is
+  always the menu. The bindings are global to the server, so it is
+  **opt-in** (`pane_menu`, default false): turning it on replaces both
+  your own right-click bindings. The frame loads it at every launch when
+  it is on, and binds `M-MouseDown3Pane` on its own server too: on the
+  pane that runs your tmux the click goes through (`send-keys -M`) to
+  your tmux and its agent menu; any other frame pane keeps that server's
+  binding (tmux's stock menu). Without the frame, one `source-file -q`
+  line in `~/.tmux.conf`.
 
 ## 4. Contract with the tools it calls
 
@@ -193,9 +220,11 @@ tab's `command`, `user_mail_command`, `agent_command`.
 - **`session list --json [--no-recap] [--no-context]`** — the seats.
   `--no-recap` / `--no-context` are passed unless a format displays the
   recap or the context. Fields used: `name short session_id pid agent
-  status repo project cwd tmux_socket tmux_pane runtime_s idle_s
+  status state repo project cwd tmux_socket tmux_pane runtime_s idle_s
   context_pct context_used context_peak context_model` (+ `recap` when
-  a format asks). `status` ∈ busy | idle | shell | waiting | blocked.
+  a format asks). `status` ∈ busy | idle | shell | waiting | blocked;
+  `state` ∈ busy | idle with children | idle, absent from an older
+  session tools.
   `tmux_socket` names the tmux server (`-L`) and `tmux_pane` the seat's
   pane on it, or null. Pane ids repeat across servers, so a local seat
   without `tmux_socket` is placed by its pid's ancestry on the viewed

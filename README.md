@@ -268,7 +268,9 @@ beside it. Each line says what puts it there and what takes it away.
 - **Services (launchd agents):** none. sessionview runs no daemon and
   writes nothing in `~/Library/LaunchAgents/`. While a frame is open it
   runs a tmux server of its own, `sessionview-frame`, beside yours; the
-  server exits when the last frame closes.
+  server exits when the last frame closes. With `pane_menu` on, an
+  Option + right-click on that server's pane that holds your tmux goes
+  through to yours.
 - **Plugin and skills, optional:** `claude plugin marketplace add` and
   `claude plugin install` ([Install](#install)). Claude Code names the
   marketplace and the plugin in `~/.claude/settings.json`
@@ -293,9 +295,10 @@ beside it. Each line says what puts it there and what takes it away.
   mouse bindings on the status line (`MouseDown1Status`,
   `MouseDown1StatusRight`, `MouseDrag1Status`). It gives each session it
   opens the sessionview look, with options set on that session only.
-  With `pane_menu` on, it also binds a right-click in a pane
-  (`MouseDown3Pane`), in place of yours, and sets two global
-  `@sessionview_agent_menu_` options. Nothing is written to
+  With `pane_menu` on, it also binds both right-clicks in a pane
+  (`MouseDown3Pane`, and `M-MouseDown3Pane` for Option + right-click),
+  in place of yours, and sets two global `@sessionview_agent_menu_`
+  options. Nothing is written to
   `~/.tmux.conf`: these last until that tmux server exits.
 - **Outside these folders, only on a verb:** with `fullscreen` on, the
   Dock app on Terminal.app needs the Accessibility permission you grant
@@ -355,17 +358,20 @@ keep theirs beside it in `~/.sessionkit/`.
   picker (type to filter, ↑↓, enter); `+` at the bottom → start an
   agent; the store name → that store's session and store view, its `⋯`
   (or `s`) → Switch store, right-click → Kick; `all · grouped` on the agents
-  heading are toggles; drag the border to resize; `q` reloads, `Q`
+  heading are toggles (the first cycles all / store / project); drag the border to resize; `q` reloads, `Q`
   quits, esc backs out of any view
 - tab bar: `◧` at the far left hides/shows the sidebar; click selects,
   drag reorders, `+` new tab (the picker); a close `×`, on by default;
   `tmux set -g @sessionview_tab_close 0` turns it off
 - menu: ↑↓ / j k move, the letter or enter picks, esc or a click
   anywhere else closes
-- agent panes (opt-in): right-click an agent's pane for Speak, Continue,
-  Read Clipboard, Park or Succeed; each mails that agent. Turn it on
-  with `sessionview-config set pane_menu true`. It replaces your own tmux right-click menu, which is
-  why it is off by default. Using tmux without session view? Add
+- agent panes (opt-in): right-click or Option + right-click an agent's
+  pane for Speak, Continue, Read Clipboard, Park or Succeed; each mails
+  that agent. It opens even on an agent whose program uses the mouse, as
+  Claude Code does. An agent's pane is one whose title is
+  `<glyph> <address>`. Turn it on with
+  `sessionview-config set pane_menu true`. It replaces your own tmux
+  right-click menus, which is why it is off by default. Using tmux without session view? Add
   `source-file -q /path/to/sessionview/tmux/agent-menu.conf` to
   `~/.tmux.conf` and reload.
 

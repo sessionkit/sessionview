@@ -477,16 +477,50 @@ def paint(text, selected):
 WIDTH = int(CFG["width"])
 REFRESH = float(CFG["refresh"])
 GLYPH = {"busy": fg("#f9e2af") + "◐" + NOFG, "idle": fg("#a6e3a1") + "●" + NOFG,
-         "shell": C_DIM + "○" + NOFG,        "blocked": fg("#f38ba8") + "■" + NOFG,
-         "waiting": fg("#f38ba8") + "■" + NOFG}
-RANK = {"blocked": 0, "waiting": 0, "busy": 1, "idle": 2, "shell": 3}
+         "blocked": fg("#f38ba8") + "■" + NOFG, "waiting": fg("#f38ba8") + "■" + NOFG}
+RANK = {"blocked": 0, "waiting": 0, "busy": 1, "idle": 2}
+# A seat's condition, in the sidebar's words: blocked, waiting, busy or idle.
+# Every glyph, sort and rollup asks seat_word(); nothing else reads `status`
+# for that. `state` is the session tools' word (busy | idle with children |
+# idle) and decides busy against idle, but it cannot say "a prompt blocks the
+# turn" (`waiting` reads idle there), so the attention words come from the
+# raw `status` first. A feed with no `state` (an older session tools) has its
+# `status` mapped instead. Claude Code writes `shell`, not `idle`, for a seat
+# at its prompt whenever a background shell lives (a listener left running is
+# one), so most idle seats say `shell`: that is idle.
+ATTENTION = ("blocked", "waiting")
+STATE_WORD = {"busy": "busy", "idle": "idle", "idle with children": "idle"}
+STATUS_WORD = {"busy": "busy", "idle": "idle", "shell": "idle"}
+
+def seat_word(a):
+    status = a.get("status")
+    if status in ATTENTION:
+        return status
+    state = a.get("state")
+    if state:
+        return STATE_WORD.get(state, state)
+    return STATUS_WORD.get(status, status)
+
 MOUSE_RE = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([mM])")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 POPUP = "--popup" in sys.argv   # inside `tmux display-popup -E`: a jump closes us
 PICKER = None            # the ONE type-and-filter box (new session / new tab / start an agent); see open_picker
 GROUPED = CFG.get("group_by", "none") != "none"
-FILTER = "all"           # all | current  (the agents of the selected project)
+# The agents list's scopes, in the order a click on the heading word cycles
+# them: widest to narrowest. scope_filter() is what each one keeps.
+SCOPES = ("all", "store", "project")
+# The scope the sidebar starts in: "all" | "store" | "project". An OPEN
+# choice, not a decision: "all" is today's behaviour, kept until the
+# owner chooses. A one-word edit; every option is already tested.
+FILTER_DEFAULT = "all"
+# What the `store` scope shows when the selected project is in no store
+# (no store owns the viewed server, or the selected session is not one of
+# its projects): "project" | "pinned" | "nostore" | "all". An OPEN choice
+# too, and PROVISIONAL: "all" is the one option that cannot hide a seat.
+# A one-word edit; scope_filter() implements and tests all four.
+STORE_SCOPE_NO_STORE = "all"
+FILTER = FILTER_DEFAULT  # all | store | project; see scope_filter
 MENU = None              # the project menu, drawn IN the sidebar (see project_menu)
 PROMPT = None            # an inline text/confirm line, drawn IN the sidebar
 # The row a menu opens beside, so a menu appears close to the row that
@@ -995,6 +1029,30 @@ def row_store():
     socket and opens nothing)."""
     on = [s for s in stores() if (s.get("socket") or "default") == SOCK]
     return next((s for s in on if s.get("active")), None) or (on[0] if on else {})
+
+_STORE_PROJ = {}
+def store_projects(rec):
+    """The set of tm project names in store REC, by `tm project list
+    --store PATH`, cached 60s per store path (projects_recent's lifetime).
+    The empty set when REC has no path, tm is absent, or its answer is not
+    JSON. Only the `store` scope asks: `all` and `project` cost nothing.
+    Not projects_recent(): that mixes in checkouts on disk
+    (repo_projects), and a checkout is not a store project."""
+    root = (rec or {}).get("path") or ""
+    if not root:
+        return set()
+    root = os.path.realpath(root)
+    now = time.time()
+    hit = _STORE_PROJ.get(root)
+    if hit and now - hit[0] < 60:
+        return set(hit[1])
+    try:
+        rows = json.loads(sh(["tm", "project", "list", "-f", "json", "--store", root]) or "[]")
+        names = {p.get("name", "") for p in rows if isinstance(p, dict)} - {""}
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        names = set()
+    _STORE_PROJ[root] = (now, frozenset(names))
+    return set(names)
 
 def open_store(name):
     """The store row's name, and a pick in the Switch store modal: open
@@ -1768,7 +1826,7 @@ def agent_fields(a, window="", dups=(), model_w=0):
     numbered seat (`alice-e9`): two rows with the same name fall back to
     showing the extra number."""
     f = _Safe(a)
-    f["glyph"] = GLYPH.get(a.get("status"), "?")
+    f["glyph"] = GLYPH.get(seat_word(a), "?")
     # Right-hand columns line up row to row: the model is right-justified to
     # the widest one on screen, the context to 4 (`100%` is real). The dash
     # is left padded too, so the right-hand side lines up row to row.
@@ -1810,9 +1868,9 @@ def agent_fields(a, window="", dups=(), model_w=0):
 # sweeps leftovers at start, so a glyph cannot outlive the sidebar by much.
 _TABS = {}
 WRITE_TABS = True
-TAB_CH = {"busy": "\u25d0", "idle": "\u25cf", "shell": "\u25cb",
+TAB_CH = {"busy": "\u25d0", "idle": "\u25cf",
           "blocked": "\u25a0", "waiting": "\u25a0"}
-TAB_FG = {"busy": "#f9e2af", "idle": "#a6e3a1", "shell": "#7f859b",
+TAB_FG = {"busy": "#f9e2af", "idle": "#a6e3a1",
           "blocked": "#f38ba8", "waiting": "#f38ba8"}
 
 def tab_glyphs(by_win, pl):
@@ -1828,7 +1886,7 @@ def tab_glyphs(by_win, pl):
     want = {}
     for w, states in by_win.items():
         st = rollup(states)
-        if st:
+        if st in TAB_CH:                            # a word with no glyph draws none
             want[w] = st
     wins = {f"{p[1]}:{p[6]}" for p in pl}
     for w in [k for k in set(_TABS) | set(want) if k != "_swept"]:
@@ -1854,12 +1912,13 @@ def tab_clear():
     _TABS.clear()
 
 def sort_key(a, keys=None):
-    """A row's place by the `sort` config (KEYS, default CFG["sort"]): status
-    rank, then idle, as configured. Pins are not in here; see order_agents."""
+    """A row's place by the `sort` config (KEYS, default CFG["sort"]): the
+    seat's rank (seat_word), then idle, as configured. Pins are not in
+    here; see order_agents."""
     key = []
     for k in (CFG["sort"] if keys is None else keys):
         if k == "rank":
-            key.append(RANK.get(a.get("status"), 9))
+            key.append(RANK.get(seat_word(a), 9))
         else:
             v = a.get(k)
             key.append(v if v is not None else (0 if k.endswith("_s") else ""))
@@ -1941,8 +2000,9 @@ def order_agents(ag, pinned=(), keys=None, grp_of=None, group_order=None, within
     are stable, so the order within a group (and within the pinned block)
     is the first sort's. WITHIN given too: a non-pinned row's key
     inside its group is WITHIN(row), ties keeping the first sort's order;
-    the pinned block keeps its pin order. Filtering (hide, current) is the
-    caller's, BEFORE this: a pin orders a row, it never unhides one."""
+    the pinned block keeps its pin order. Filtering is the caller's, BEFORE
+    this: `hide` drops rows, pinned or not; the scope filter (scope_filter)
+    keeps every pinned row. A pin orders a row; this function never adds one."""
     pins = pin_rank(pinned)
     def pin(a):
         return pins.get(a.get("agent"), len(pins))
@@ -1958,6 +2018,57 @@ def order_agents(ag, pinned=(), keys=None, grp_of=None, group_order=None, within
         out.sort(key=gkey)
     return out
 
+def scope_filter(ag, scope, p2s, cur_sess, pinned=(), store_sessions=None, no_store=None):
+    """The rows of AG that SCOPE shows, in AG's order, pure: AG and its
+    rows are not changed. It runs after `hide` and BEFORE order_agents.
+
+    A pinned row (its `agent` is in PINNED) is kept under every scope. A
+    pinned row whose status is in `hide` stays hidden: `hide` runs first and
+    is the user's own standing rule, not a scope.
+
+    P2S maps a pane to its session on the VIEWED server; CUR_SESS is the
+    selected session. STORE_SESSIONS is the current store's session set
+    (its tm projects plus its own session), or None when no store owns the
+    viewed server. A remote row (`_host`) is never local: its pane id is the
+    remote server's, and pane ids collide across servers.
+
+    - all: every row.
+    - project: the local rows whose session is CUR_SESS.
+    - store, CUR_SESS in STORE_SESSIONS: the local rows whose session is in
+      STORE_SESSIONS.
+    - store, anywhere else (no store, or the selected session is not one of
+      its projects): NO_STORE says, default STORE_SCOPE_NO_STORE -
+      "project" the project rule; "pinned" the pins only; "nostore" the
+      local rows on the viewed server whose session is not in the store
+      (with no store, every local row on the viewed server); "all" every row.
+      It keeps to the viewed server, like the other two scopes: a seat with
+      no pane here has no session here to compare.
+    An unknown SCOPE or NO_STORE shows every row: a typo never hides a seat."""
+    pins = pin_rank(pinned)
+    if no_store is None:
+        no_store = STORE_SCOPE_NO_STORE
+
+    def sess(a):                     # the row's session on the viewed server, or ""
+        return "" if a.get("_host") else (p2s.get(a.get("tmux_pane") or "") or "")
+
+    def in_project(a):
+        return bool(cur_sess) and sess(a) == cur_sess
+
+    store = (set(store_sessions) - {""}) if store_sessions is not None else None
+    if scope == "project":
+        keep = in_project
+    elif scope == "store" and store is not None and cur_sess in store:
+        keep = lambda a: sess(a) in store
+    elif scope == "store" and no_store == "project":
+        keep = in_project
+    elif scope == "store" and no_store == "pinned":
+        keep = lambda a: False
+    elif scope == "store" and no_store == "nostore":
+        keep = lambda a: bool(sess(a)) and (store is None or sess(a) not in store)
+    else:                            # all, the "all" no-store option, or an unknown word
+        keep = lambda a: True
+    return [a for a in ag if a.get("agent") in pins or keep(a)]
+
 def rollup(states):
     return min(states, key=lambda s: RANK.get(s, 9)) if states else None
 
@@ -1970,11 +2081,6 @@ IDLE_W = 4                       # `999m`: the cell is always this wide, so rows
 C_IDLE_ORANGE = fg("#fab387")    # the palette's peach, beside the busy yellow
 C_IDLE_RED = fg("#f38ba8")       # the blocked glyph's red
 IDLE_DEFAULTS = {"agent_idle_orange": 45, "agent_idle_red": 60, "agent_idle_blink": 0}
-# The statuses that mean "at its prompt, its turn over": Claude Code writes
-# `shell`, not `idle`, whenever a background shell lives (a listener left
-# running is one), so many idle seats say `shell`; the session tools read
-# both as the state `idle`. busy, waiting and blocked are not idle.
-IDLE_STATUSES = ("idle", "shell")
 
 def idle_minutes_setting(key):
     """A threshold in minutes from the config, or None for off: 0, a
@@ -1994,14 +2100,14 @@ def idle_minutes_setting(key):
 
 def fmt_idle_cell(a):
     """The {idle_m} cell, IDLE_W columns wide whatever it holds. Blank unless
-    the seat is IDLE (its status is in IDLE_STATUSES): idle_s is the time in
+    the seat is IDLE (seat_word says idle): idle_s is the time in
     the current state, so a seat busy for an hour has a large idle_s too,
     and must show nothing.
     An idle seat shows its whole minutes (`34m`; hours past 999m): dim grey,
     then orange and bold from agent_idle_orange, red and bold from
     agent_idle_red, blinking from agent_idle_blink when that is set (it is
     off by default)."""
-    if a.get("status") not in IDLE_STATUSES:
+    if seat_word(a) != "idle":
         return " " * IDLE_W
     try:
         secs = max(0, int(a.get("idle_s") or 0))
@@ -2112,8 +2218,8 @@ def render_base(height=None):
         pane = a.get("tmux_pane") or ""
         s = p2s.get(pane)
         if s:
-            by_sess.setdefault(s, []).append(a.get("status", ""))
-            by_win.setdefault(f"{s}:{p2i[pane]}", []).append(a.get("status", ""))
+            by_sess.setdefault(s, []).append(seat_word(a) or "")
+            by_win.setdefault(f"{s}:{p2i[pane]}", []).append(seat_word(a) or "")
     tab_glyphs(by_win, pl)                                            # the tab-bar glyphs
 
     lines, targets = [], {}
@@ -2247,7 +2353,7 @@ def render_base(height=None):
         for a in R["agents"]:
             sname = R["p2s"].get(a.get("tmux_pane") or "")
             if sname:
-                rby.setdefault(sname, []).append(a.get("status", ""))
+                rby.setdefault(sname, []).append(seat_word(a) or "")
         for name, nwin, att in R["sessions"]:
             st = rollup(rby.get(name, []))
             g = GLYPH.get(st, " ") if st else " "
@@ -2267,8 +2373,14 @@ def render_base(height=None):
             pane = a.get("tmux_pane") or ""
             ag.append(dict(a, _host=host, _window=R.get("p2w", {}).get(pane, ""),
                            _session=R.get("p2s", {}).get(pane, "")))
-    if FILTER == "current":
-        ag = [a for a in ag if p2s.get(a.get("tmux_pane") or "") == cur_sess]
+    # the scope, then the sort: a pinned row shows under every scope. The
+    # store's session set (its tm projects, its own session, a live legacy
+    # `store`) is asked for only under `store`: all and project cost nothing.
+    in_sess = None
+    if FILTER == "store" and srec:
+        in_sess = (store_projects(srec) | {ssess}
+                   | ({LEGACY_STORE_SESSION} & {n for n, _, _ in live_sessions}))
+    ag = scope_filter(ag, FILTER, p2s, cur_sess, CFG.get("pinned_agents"), in_sess)
     gb = CFG.get("group_by", "none") if not GROUPED else (
          CFG.get("group_by", "none") if CFG.get("group_by", "none") != "none" else "session")
     if not GROUPED:
@@ -2304,11 +2416,15 @@ def render_base(height=None):
     targets[len(lines)] = ("new-or-menu", (vislen(left), WIDTH - vislen(right) if right else WIDTH + 1))
     lines.append(row(C_DIM + lay(spec, WIDTH, chrome=True) + NOFG))
     put("")
-    # heading: "<left from config>      all · grouped" -- each word a toggle,
-    # lit when on: show all, or show current
+    # heading: "<left from config>      all · grouped" -- each word a toggle.
+    # The first names the scope, lit whenever a scope narrows the list; under
+    # the "pinned" no-store option, outside a store, it says so: `no store`.
     hl = (CFG["agents_heading"].split("\t", 1) + [""])[0]
-    filt = "current" if FILTER == "current" else "all"
-    r_filt = (C_SEL if FILTER == "current" else C_DIM) + filt + C_DIM
+    filt = FILTER
+    if FILTER == "store" and STORE_SCOPE_NO_STORE == "pinned" \
+            and not (cur_sess and in_sess is not None and cur_sess in in_sess):
+        filt = "no store"
+    r_filt = (C_SEL if FILTER != "all" else C_DIM) + filt + C_DIM
     r_grp = (C_SEL if GROUPED else C_DIM) + "grouped" + C_DIM
     rtxt = f"{filt} \u00b7 grouped "
     x_right = WIDTH - len(rtxt)
@@ -3686,7 +3802,8 @@ def main():
                     if x >= x_grp + 1:
                         GROUPED = not GROUPED
                     elif x >= x_filt:
-                        FILTER = "all" if FILTER == "current" else "current"
+                        FILTER = SCOPES[(SCOPES.index(FILTER) + 1) % len(SCOPES)
+                                        if FILTER in SCOPES else 0]
                 elif what == "plus-or-collapse":          # the bottom control strip
                     lw, rx = val
                     if x <= lw + 1:

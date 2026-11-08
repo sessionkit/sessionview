@@ -80,7 +80,7 @@ class PureSort(unittest.TestCase):
     def test_pinned_lead_in_pin_order_whatever_their_status(self):
         # cleo idle 600s would sort near the bottom; pat busy near the top.
         self.assertEqual(self.order(["cleo", "pat"]),
-                         ["cleo", "pat", "amy", "bob", "zed", "shell"])
+                         ["cleo", "pat", "amy", "bob", "shell", "zed"])
 
     def test_pin_order_is_the_list_order_not_the_status_order(self):
         self.assertEqual(self.order(["pat", "cleo"])[:2], ["pat", "cleo"])
@@ -92,21 +92,21 @@ class PureSort(unittest.TestCase):
                 self.assertEqual(self.order(["cleo", "pat"], rows=rows)[:2], ["cleo", "pat"])
 
     def test_the_rest_keep_the_configured_sort(self):
-        # rank (blocked, busy, idle, shell), then idle_s
-        self.assertEqual(self.order(["cleo", "pat"])[2:], ["amy", "bob", "zed", "shell"])
+        # rank (blocked, busy, idle), then idle_s; a seat saying `shell` is idle
+        self.assertEqual(self.order(["cleo", "pat"])[2:], ["amy", "bob", "shell", "zed"])
         # and another `sort` is honoured, not hard-wired: by name
         self.assertEqual(self.order(["cleo"], keys=("agent",)),
                          ["cleo", "amy", "bob", "pat", "shell", "zed"])
 
     def test_empty_pins_leave_todays_order(self):
         today = [a["agent"] for a in sorted(ROWS, key=lambda a: (
-            {"blocked": 0, "waiting": 0, "busy": 1, "idle": 2, "shell": 3}[a["status"]], a["idle_s"]))]
+            {"blocked": 0, "waiting": 0, "busy": 1, "idle": 2, "shell": 2}[a["status"]], a["idle_s"]))]
         self.assertEqual(self.order([]), today)
         self.assertEqual(self.order(None), today)
 
     def test_a_pin_with_no_live_row_is_harmless(self):
         self.assertEqual(self.order(["ghost", "cleo"]),
-                         ["cleo", "amy", "pat", "bob", "zed", "shell"])
+                         ["cleo", "amy", "pat", "bob", "shell", "zed"])
 
     def test_a_name_pinned_twice_keeps_its_first_place(self):
         self.assertEqual(self.order(["pat", "cleo", "pat"])[:2], ["pat", "cleo"])

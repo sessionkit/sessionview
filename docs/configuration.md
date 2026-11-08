@@ -81,7 +81,10 @@ The `messages` tab shows a project's mail in neomutt, read-only.
 - The tab's sidebar needs notmuch to index two headers:
   `notmuch config set index.header.Type Type` and
   `notmuch config set index.header.Project Project`, then
-  `notmuch reindex '*'`.
+  `notmuch reindex '*'`. When sessionmail names its own notmuch profile
+  (`message path --notmuch-config`, sessionmail 0.3.3), the tab and
+  `sessionview-install --check` use that file, and the fix line they
+  print carries its `--config=`.
 
 Your own mail client, the sidebar's mail row, is set by the
 `user_mail_*` keys on the [settings page][settings].
@@ -119,9 +122,12 @@ repository.
   frame to its own sessions only.
 - `<checkout>/tmux/tabs-top.conf`: the same look for every tmux session.
   Optional: `source-file` it from `~/.tmux.conf`.
-- `<checkout>/tmux/agent-menu.conf`: the agent pane menu. The frame loads
-  it when the `pane_menu` key is `true`; without the frame,
-  `source-file -q` it from `~/.tmux.conf`.
+- `<checkout>/tmux/agent-menu.conf`: the agent pane menu, on both
+  right-clicks (`MouseDown3Pane` and Option's `M-MouseDown3Pane`). The
+  frame loads it when the `pane_menu` key is `true`, and an Option +
+  right-click on your tmux in the frame reaches it. Without the frame,
+  `source-file -q` it from `~/.tmux.conf`. It needs tmux's `mouse`
+  option on, the default since tmux 3.8.
 - `tmux set -g @sessionview_tab_close 0`: no close `×` on the tabs.
 
 ## Paths

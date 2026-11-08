@@ -95,6 +95,23 @@ class CheckWithoutNeomutt(unittest.TestCase):
         self.assertIn("not ready", r.stdout)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
 
+    def test_notmuch_is_asked_of_sessionmails_profile(self):
+        # sessionmail 0.3.3 names its notmuch profile; only that file has the
+        # headers indexed, so a PASS proves the check asked it, as the tab does.
+        cfg = os.path.join(self.home, "nm", "config")
+        shim(self.shims, "message",
+             f'#!/bin/sh\n[ "$1 $2" = "path --notmuch-config" ] && echo {cfg} && exit 0\nexit 2\n')
+        shim(self.shims, "notmuch",
+             f'#!/bin/sh\n[ "$1" = --config={cfg} ] || exit 0\nshift\n'
+             '[ "$1 $2" = "config get" ] && echo "${3#index.header.}"\nexit 0\n')
+        r = self.check()
+        self.assertEqual(self.line(r, "notmuch"), ("PASS", f"notmuch indexes Type and Project ({cfg})"))
+        # no profile (an older sessionmail: exit 2): the bare default, which here says nothing
+        shim(self.shims, "message", "#!/bin/sh\nexit 2\n")
+        verdict, text = self.line(self.check(), "notmuch")
+        self.assertEqual(verdict, "WARN")
+        self.assertIn("notmuch config set index.header.Type Type", text)
+
 
 if __name__ == "__main__":
     unittest.main()

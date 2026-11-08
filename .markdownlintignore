@@ -1,2 +1,4 @@
 # CLAUDE.md is the single line `@AGENTS.md`; MD041 would want a heading.
 /CLAUDE.md
+# A changelog.d fragment starts at `### Added` (its README's rule): MD041 would want an h1.
+/changelog.d/*.md

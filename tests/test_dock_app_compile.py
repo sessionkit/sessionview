@@ -10,7 +10,7 @@ Terminal-only user. The iTerm block is now a source string run by `run
 script ... with parameters {cmd, wantFull}`, compiled only when that branch
 runs.
 
-Three layers, so the guard holds on every host:
+Four layers, so the guard holds on every host:
 
 - osacompile builds the script into a scratch dir under $TMPDIR. On a Mac
   without iTerm this was red before the fix and is green after it. On a Mac
@@ -18,17 +18,31 @@ Three layers, so the guard holds on every host:
 - a host-independent scan: no `application "iTerm"` (tell, using terms from,
   or by bundle id) may appear outside a string literal or a comment;
 - where iTerm is absent, the iTerm branch's string fails to compile as a
-  CATCHABLE error, the one the applet turns into an alert naming iTerm. It is
-  skipped where iTerm may be installed, because there it would open a window.
+  CATCHABLE error, the one the applet turns into an alert naming iTerm. This
+  probe is OFF by default, on every host: compiling a string that tells iTerm,
+  on a Mac without iTerm, can block osascript on a GUI prompt that waits for
+  someone to answer it, so an unattended `make test` would hang. Set
+  SESSIONVIEW_TEST_ITERM_PROBE=1, at a screen where you can answer that
+  prompt, to run it. It still skips where iTerm may be installed, because
+  there it would open a window, and it gives up after a short timeout, kills
+  osascript and FAILS, never hangs;
+- a host-independent read of the iTerm branch: that prompt is real, and the
+  shipped app hit it too (the compiler looks iTerm up by name and waits on a
+  "Where is iTerm?" chooser), so before the string is compiled the branch
+  asks whether iTerm exists, with a check that holds no application
+  reference and so cannot prompt, and goes to the alert when it does not.
 
 Nothing is written to ~/Applications: the outputs are temp dirs, removed.
 """
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from tests import support
 
@@ -36,6 +50,20 @@ SRC = os.path.join(support.REPO, "macos", "SessionView.applescript")
 
 #: the skip reason off a Mac. Loud, so a skip is never read as a pass.
 OSACOMPILE_SKIP = "SKIPPED: needs osacompile (macOS only)"
+
+#: the opt-in for the osascript probe of the iTerm string. Only "1" opts in.
+PROBE_ENV = "SESSIONVIEW_TEST_ITERM_PROBE"
+
+#: seconds the opted-in probe may take before osascript is killed. A catchable
+#: compile error comes back in well under a second; anything near this is a
+#: prompt waiting for an answer.
+PROBE_TIMEOUT = 20
+
+#: the default skip: why the probe is off, and how to turn it on.
+PROBE_SKIP = ("SKIPPED: off by default. Compiling a string that tells iTerm, on a "
+              "Mac without iTerm, can block osascript on a GUI prompt, and an "
+              "unattended run would hang. To run it, set " + PROBE_ENV + "=1 at a "
+              "screen where you can answer that prompt")
 
 #: an application named in code by name or bundle id, the shapes that make
 #: the COMPILER fetch that app's dictionary: tell / using terms from /
@@ -116,6 +144,38 @@ def iterm_may_be_installed():
     return r.returncode != 0 or bool(r.stdout.strip())
 
 
+def probe_opted_in(environ=None):
+    """True only when PROBE_ENV is exactly "1" in ENVIRON (os.environ)."""
+    return (os.environ if environ is None else environ).get(PROBE_ENV) == "1"
+
+
+class ProbeTimeout(Exception):
+    """A bounded child outlived its timeout and was killed. .pid is the child's."""
+
+    def __init__(self, argv, timeout, pid):
+        super().__init__(f"{argv[0]} still running after {timeout}s; killed")
+        self.pid = pid
+
+
+def run_bounded(argv, timeout):
+    """Run ARGV, capturing text output, and return its CompletedProcess. If it
+    outlives TIMEOUT seconds, kill it and its process group, reap it and raise
+    ProbeTimeout: never a hang, never a stray child left behind."""
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.kill()
+        proc.communicate()
+        raise ProbeTimeout(argv, timeout, proc.pid) from None
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
 class ScanTest(unittest.TestCase):
     """The host-independent guard, and the scanner it rests on."""
 
@@ -165,6 +225,87 @@ class ScanTest(unittest.TestCase):
                          [("code", "x "), ("string", 'a \\"b\\" c'), ("code", " y")])
 
 
+def iterm_branch(source):
+    """The text of the main script's `if term is "iterm" then` branch, up to
+    the next terminal's branch."""
+    m = re.search(r'\nif term is "iterm" then\n(.*?)\nelse if term is ', source, re.S)
+    return m.group(1) if m else None
+
+
+def handler(source, name):
+    """The text of handler NAME, `on NAME(...)` through `end NAME`."""
+    m = re.search(r"\non " + name + r"\(.*?\nend " + name + r"\n", source, re.S)
+    return m.group(0) if m else None
+
+
+class ItermGuardTest(unittest.TestCase):
+    """Without iTerm, compiling the iTerm string does not fail: AppleScript's
+    compiler looks iTerm up by name and puts up a "Where is iTerm?" chooser that
+    waits with no time limit, so the app hung and its alert was never shown.
+    The branch now asks first, with a check that cannot prompt. Host-independent:
+    this reads the source, it runs nothing."""
+
+    GUARD = 'if not itermFound() then error'
+
+    def setUp(self):
+        with open(SRC, encoding="utf-8") as f:
+            self.source = f.read()
+        self.branch = iterm_branch(self.source)
+        self.assertIsNotNone(self.branch, 'the `if term is "iterm"` branch')
+
+    def test_guard_comes_before_the_run_script_inside_the_alert_try(self):
+        run = self.branch.find("run script itermScript")
+        guard = self.branch.find(self.GUARD)
+        self.assertNotEqual(run, -1, "the run script line, in the iTerm branch")
+        self.assertNotEqual(guard, -1, "the itermFound guard, in the iTerm branch")
+        self.assertLess(guard, run, "the guard must run BEFORE the string is compiled")
+        self.assertEqual(self.branch.count(self.GUARD), 1)
+        # inside the same try as the run script, so its error reaches the alert
+        try_at = self.branch.rfind("\n\ttry\n", 0, guard)
+        on_error = self.branch.find("\ton error errMsg number errNum", run)
+        self.assertNotEqual(try_at, -1, "a try before the guard")
+        self.assertNotIn("end try", self.branch[try_at:guard])
+        self.assertNotEqual(on_error, -1, "the on error after the run script")
+        self.assertIn('display alert "SessionView cannot open iTerm"',
+                      self.branch[on_error:])
+
+    def test_guard_error_reaches_the_alert_not_the_silent_cancel(self):
+        line = next((l for l in self.branch.splitlines() if self.GUARD in l), None)
+        self.assertIsNotNone(line, "the itermFound guard, in the iTerm branch")
+        m = re.search(r"\bnumber\s+(-?\d+)", line)
+        self.assertIsNotNone(m, "the guard raises a numbered error")
+        # -128 is re-raised silently by the handler, with no alert
+        self.assertNotEqual(int(m.group(1)), -128)
+        self.assertIn("if errNum is -128 then error number -128", self.branch)
+
+    def test_check_cannot_prompt(self):
+        body = handler(self.source, "itermFound")
+        self.assertIsNotNone(body, "the itermFound handler")
+        self.assertIn("do shell script", body)
+        segs = segments(body)
+        code = "".join(t for k, t in segs if k == "code")
+        strings = [t for k, t in segs if k == "string"]
+        # no application reference of any kind: that is what prompts
+        self.assertNotRegex(code, r"(?i)\bapplication\b")
+        self.assertNotRegex(code, r"(?i)\btell\b")
+        self.assertEqual(iterm_refs_in_code(body), [])
+        for text in strings:
+            with self.subTest(text=text):
+                self.assertNotRegex(text, r"(?i)\btell\s+application\b")
+                self.assertNotRegex(text, r'(?i)\bapplication\s*(?:id\s*)?\(?\s*\\?["\']')
+        # the probes: running, both Applications folders, LaunchServices by id
+        joined = "\n".join(strings)
+        for probe in ("pgrep -x iTerm2", "test -d /Applications/iTerm.app",
+                      'test -d \\"$HOME/Applications/iTerm.app\\"',
+                      "URLForApplicationWithBundleIdentifier('com.googlecode.iterm2')"):
+            with self.subTest(probe=probe):
+                self.assertIn(probe, joined)
+
+    def test_helpers_find_nothing_in_a_script_without_them(self):
+        self.assertIsNone(iterm_branch('if term is "ghostty" then\nend if\n'))
+        self.assertIsNone(handler("on isRunning(p)\nend isRunning\n", "itermFound"))
+
+
 @unittest.skipUnless(shutil.which("osacompile"), OSACOMPILE_SKIP)
 class CompileTest(unittest.TestCase):
     """osacompile, into $TMPDIR scratch, never ~/Applications."""
@@ -179,11 +320,17 @@ class CompileTest(unittest.TestCase):
                                                          "Scripts", "main.scpt")))
 
 
-@unittest.skipUnless(shutil.which("osascript"), "SKIPPED: needs osascript (macOS only)")
+OSASCRIPT_SKIP = "SKIPPED: needs osascript (macOS only)"
+
+
+@unittest.skipUnless(shutil.which("osascript"), OSASCRIPT_SKIP)
 class NoItermRunTest(unittest.TestCase):
-    """Without iTerm, the iTerm branch fails as an error the applet catches."""
+    """Without iTerm, the iTerm branch fails as an error the applet catches.
+    Opt-in only (PROBE_ENV): see the module docstring."""
 
     def test_iterm_string_fails_catchably_without_iterm(self):
+        if not probe_opted_in():
+            self.skipTest(PROBE_SKIP)
         if iterm_may_be_installed():
             self.skipTest("SKIPPED: iTerm may be installed here; running its branch "
                           "would open a window")
@@ -202,10 +349,95 @@ class NoItermRunTest(unittest.TestCase):
             path = os.path.join(tmp, "probe.applescript")
             with open(path, "w", encoding="utf-8") as f:
                 f.write(probe)
-            r = subprocess.run(["osascript", path], capture_output=True, text=True,
-                               timeout=60)
+            try:
+                r = run_bounded(["osascript", path], PROBE_TIMEOUT)
+            except ProbeTimeout:
+                self.fail(f"osascript did not return within {PROBE_TIMEOUT}s and was "
+                          "killed: compiling the iTerm string without iTerm blocked, "
+                          "most likely on a GUI prompt waiting for an answer, instead "
+                          "of failing as an error the applet can catch")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertRegex(r.stdout.strip(), r"^caught -\d+$")
+
+
+class ProbeGuardTest(unittest.TestCase):
+    """The probe's gate and bound, proved without running osascript on iTerm."""
+
+    def run_probe_case(self):
+        """Run NoItermRunTest into a fresh TestResult and return it."""
+        result = unittest.TestResult()
+        unittest.defaultTestLoader.loadTestsFromTestCase(NoItermRunTest).run(result)
+        return result
+
+    def never(self, name):
+        return mock.patch.object(sys.modules[__name__], name,
+                                 side_effect=AssertionError(name + " must not run"))
+
+    def test_only_exactly_one_opts_in(self):
+        for value in (None, "", "0", "true", "yes", " 1"):
+            with self.subTest(value=value):
+                env = {} if value is None else {PROBE_ENV: value}
+                self.assertFalse(probe_opted_in(env))
+        self.assertTrue(probe_opted_in({PROBE_ENV: "1"}))
+
+    def test_probe_skips_by_default_and_runs_nothing(self):
+        env = {k: v for k, v in os.environ.items() if k != PROBE_ENV}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                self.never("run_bounded") as ran, \
+                self.never("iterm_may_be_installed") as looked:
+            result = self.run_probe_case()
+        self.assertEqual((result.failures, result.errors), ([], []))
+        self.assertEqual(len(result.skipped), 1)
+        ran.assert_not_called()
+        looked.assert_not_called()
+        if shutil.which("osascript"):
+            reason = result.skipped[0][1]
+            self.assertEqual(reason, PROBE_SKIP)
+            self.assertIn(PROBE_ENV + "=1", reason)
+            self.assertIn("GUI prompt", reason)
+
+    @unittest.skipUnless(shutil.which("osascript"), OSASCRIPT_SKIP)
+    def test_opted_in_where_iterm_may_be_installed_still_skips(self):
+        with mock.patch.dict(os.environ, {PROBE_ENV: "1"}), \
+                mock.patch.object(sys.modules[__name__], "iterm_may_be_installed",
+                                  return_value=True), \
+                self.never("run_bounded") as ran:
+            result = self.run_probe_case()
+        self.assertEqual((result.failures, result.errors), ([], []))
+        self.assertEqual(len(result.skipped), 1)
+        self.assertIn("iTerm may be installed", result.skipped[0][1])
+        ran.assert_not_called()
+
+    @unittest.skipUnless(shutil.which("osascript"), OSASCRIPT_SKIP)
+    def test_opted_in_timeout_is_a_failure_naming_the_prompt(self):
+        calls = []
+
+        def timed_out(argv, timeout):
+            calls.append((argv[0], timeout))
+            raise ProbeTimeout(argv, timeout, 0)
+
+        with mock.patch.dict(os.environ, {PROBE_ENV: "1"}), \
+                mock.patch.object(sys.modules[__name__], "iterm_may_be_installed",
+                                  return_value=False), \
+                mock.patch.object(sys.modules[__name__], "run_bounded",
+                                  side_effect=timed_out):
+            result = self.run_probe_case()
+        self.assertEqual(calls, [("osascript", PROBE_TIMEOUT)])
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("GUI prompt", result.failures[0][1])
+        self.assertLessEqual(PROBE_TIMEOUT, 20)
+
+    def test_run_bounded_returns_the_result(self):
+        r = run_bounded([sys.executable, "-c", "import sys; print('ok'); "
+                         "sys.stderr.write('e'); sys.exit(3)"], 30)
+        self.assertEqual((r.returncode, r.stdout.strip(), r.stderr), (3, "ok", "e"))
+
+    def test_run_bounded_kills_a_child_that_outlives_its_timeout(self):
+        with self.assertRaises(ProbeTimeout) as cm:
+            run_bounded([sys.executable, "-c", "import time; time.sleep(60)"], 0.5)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(cm.exception.pid, 0)
 
 
 if __name__ == "__main__":
