@@ -59,10 +59,10 @@ class References(unittest.TestCase):
                 self.assertIn(f"`{glyph}`", doc)
 
     def test_session_bullet_lists_no_stale_tab(self):
-        """The sessionview-session bullet points at tabs.md; every tab it
+        """The `sessionview session` bullet points at tabs.md; every tab it
         names in backticks is a template tab (`code` became `repo`)."""
         text = read(SKILL, "SKILL.md")
-        bullet = text[text.index("- `sessionview-session NAME`"):]
+        bullet = text[text.index("- `sessionview session NAME`"):]
         bullet = bullet[:bullet.index("\n- ")]
         self.assertIn("references/tabs.md", bullet)
         tpl = json.loads(read(support.REPO, "config", "config.json"))

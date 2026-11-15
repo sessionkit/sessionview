@@ -19,7 +19,8 @@ it printed a word. `--version` was refused everywhere.
   must stay empty, so no tmux server or client, no TUI, no requirements
   check and no Python probe ran (a recorder tmux cannot start a server);
 - with SESSIONVIEW_PYTHON set to a recording wrapper around the suite's own
-  interpreter. Only `config`, a Python tool, may run it, and only on itself.
+  interpreter. Only `config` and `show`, the Python tools, may run it, and
+  each only on itself.
 
 Every verb the dispatcher routes is read from bin/sessionview's own case, so
 a verb added later is covered without editing this file. Each call is in its
@@ -160,6 +161,20 @@ def shown(argv):
                     for a in argv)
 
 
+#: The routed verbs that are Python tools: each may run the interpreter, on itself only.
+PYTHON_TOOLS = {"config": "sessionview-config", "show": "sessionview-show"}
+#: The verbs whose tool is not on PATH: their usage names the form a user types.
+OFF_PATH = ("config", "session", "messages")
+
+
+def usage_name(verb):
+    """The name VERB's usage must show: `sessionview VERB` for an off-PATH
+    tool, else the tool's own name."""
+    if verb == "sidebar":
+        return "tmux-sidebar"
+    return f"sessionview {verb}" if verb in OFF_PATH else f"sessionview-{verb}"
+
+
 class AskingNeverActs(unittest.TestCase):
     def assert_quiet(self, argv, name, python_ok=None):
         """ARGV exits 0, prints usage naming NAME, and touches nothing.
@@ -190,8 +205,8 @@ class AskingNeverActs(unittest.TestCase):
 
     def test_every_routed_verb_help_through_the_dispatcher(self):
         for verb in routed_verbs():
-            name = "tmux-sidebar" if verb == "sidebar" else f"sessionview-{verb}"
-            ok = "sessionview-config" if verb == "config" else None
+            name = usage_name(verb)
+            ok = PYTHON_TOOLS.get(verb)
             for flag in ("--help", "-h"):
                 with self.subTest(verb=verb, flag=flag):
                     self.assert_quiet([DISPATCHER, verb, flag], name, python_ok=ok)
@@ -199,10 +214,11 @@ class AskingNeverActs(unittest.TestCase):
     def test_every_routed_verb_help_called_directly(self):
         for verb in routed_verbs():
             tool = "tmux-sidebar" if verb == "sidebar" else f"sessionview-{verb}"
-            ok = "sessionview-config" if verb == "config" else None
+            ok = PYTHON_TOOLS.get(verb)
             for flag in ("--help", "-h"):
                 with self.subTest(tool=tool, flag=flag):
-                    self.assert_quiet([os.path.join(support.BIN, tool), flag], tool, python_ok=ok)
+                    self.assert_quiet([os.path.join(support.BIN, tool), flag], usage_name(verb),
+                                      python_ok=ok)
 
     def test_frame_help_makes_no_state_dir(self):
         for flag in ("--help", "-h"):
@@ -251,14 +267,14 @@ class UnknownFlagRefuses(unittest.TestCase):
 
     def test_every_routed_verb_through_the_dispatcher(self):
         for verb in routed_verbs():
-            ok = "sessionview-config" if verb == "config" else None
+            ok = PYTHON_TOOLS.get(verb)
             for flag in self.FLAGS:
                 with self.subTest(verb=verb, flag=flag):
                     self.assert_refuses([DISPATCHER, verb, flag], python_ok=ok)
 
     def test_every_tool_called_directly(self):
         for tool in tools():
-            ok = "sessionview-config" if tool == "sessionview-config" else None
+            ok = tool if tool in PYTHON_TOOLS.values() else None
             for flag in self.FLAGS:
                 if tool == "sessionview" and flag == "--version":
                     continue                     # the dispatcher's own, answered
@@ -380,6 +396,7 @@ class RoutedVerbsNeedNoInheritedEnv(unittest.TestCase):
             "messages": (["demo", "--print"], 0, "box=demo folder="),
             "session": (["demo", "--print"], 0, None),
             "install": (["--check"], None, "requirements:"),
+            "show": (["--current"], 3, "no sessionview frame"),
         }
         self.assertEqual(sorted(cases), sorted(v for v in routed_verbs() if v != "sidebar"))
         for verb, (args, want_rc, want_out) in cases.items():

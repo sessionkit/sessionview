@@ -178,7 +178,7 @@ class EmptyValueStaysLive(unittest.TestCase):
 class TrailingSlotRefuses(unittest.TestCase):
     """SV-200's reviewer probe 2, kept: a VALID form of each tool, then a
     trailing --bogus. Each refuses with exit 2, makes nothing and runs no
-    recorder (config may run the interpreter on itself)."""
+    recorder (config and show may each run the interpreter on itself)."""
 
     CASES = (
         ["sessionview-session", "demo", "--print", "--bogus"],
@@ -202,14 +202,16 @@ class TrailingSlotRefuses(unittest.TestCase):
         ["sessionview-send", "--bogus"],
         ["sessionview-autostart", "nosock", "nosess", "--fresh-window", "--bogus"],
         ["sessionview-newtab", "foo", "/tmp", "--bogus"],
+        ["sessionview-show", "--current", "--bogus"],
+        ["sessionview-show", "FILE", "--dry-run", "--bogus"],
     )
 
     def test_a_trailing_unknown_flag_refuses_in_every_tool(self):
-        config = tool(CONFIG)
+        own = ("python " + tool(CONFIG), "python " + tool("sessionview-show"))   # the Python tools, on themselves
         for case in self.CASES:
             with self.subTest(argv=case):
                 rc, out, err, changed, calls = vh.fresh_run([tool(case[0]), *case[1:]])
-                calls = [c for c in calls if not c.startswith("python " + config)]
+                calls = [c for c in calls if not c.startswith(own)]
                 what = " ".join(case)
                 self.assertEqual(changed, [], f"{what}: touched {changed}")
                 self.assertEqual(calls, [], f"{what}: ran {calls}")

@@ -1,0 +1,787 @@
+#!/bin/sh
+''':'
+# Started by sh: re-run this file with a Python 3.11 or newer. The rest of
+# the file is Python; to Python, these lines are one string. Stdlib only.
+[ -n "${SESSIONVIEW_PYTHON:-}" ] && exec "$SESSIONVIEW_PYTHON" "$0" "$@"
+for p in python3.14 python3.13 python3.12 python3.11 python3; do
+  command -v "$p" >/dev/null 2>&1 || continue
+  "$p" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null && exec "$p" "$0" "$@"
+done
+echo "sessionview: needs Python 3.11 or newer and found none on PATH (macOS ships 3.9)." >&2
+exit 1
+':'''
+__doc__ = """sessionview-show - bring a file to the front, in the place it belongs.
+
+  sessionview show FILE [--dry-run] [--json | --porcelain] [--by NAME]
+                       move the sessionview frame to FILE: its server,
+                       session, window and pane, unzoomed, in the Neovim
+                       there, with FILE in front. A second run changes
+                       nothing.
+  sessionview show --current [--json]       where the frame is now (read-only)
+  sessionview show --target FILE [--json]   where FILE belongs (read-only)
+  sessionview show -h | --help
+
+  --dry-run   print both places, what differs, and every command a real run
+              would send; send none of them
+  --json      the same, as one JSON object
+  --porcelain one line for a shell caller, tab-separated: RESULT SERVER
+              SESSION WINDOW_ID PANE_ID NVIM_SOCKET ("-" for what is not
+              known); RESULT is shown, already-there, would, failed or
+              not-ours
+  --by NAME   who asked; the moved client shows "shown: FILE · asked by NAME"
+
+Where FILE belongs: a Neovim that already has it open wins (it moves the
+least). Otherwise the project whose git url is the file's repo remote names
+the server (its store's) and the session (the project); the window is the
+one sessionview's config runs the editor in. A file in no repo belongs to
+main on the default server. Two Neovims in that window: the one with the
+file, else pane 0.
+
+What moves: ONE client, the one in the main pane of the frame whose
+terminal was used most recently. From the first level that differs, down:
+server (detach-client -E, re-attached on the other server), session
+(switch-client), window, pane, zoom (another pane's zoom is undone; the
+file's own pane keeps its zoom), then the Neovim (--remote, which is
+:drop). A missing session or editor window is made first, by
+sessionview-session, and the result says so.
+
+Exit: 0 shown, or already there
+      1 a step failed; the output says which ran
+      2 usage
+      3 not ours: no sessionview frame, or no rule names a window for FILE
+        (nothing moved; a caller falls back to its own way)
+"""
+import glob, json, os, shlex, shutil, stat, subprocess, sys, time
+
+ASK_TIMEOUT = float(os.environ.get("SESSIONVIEW_SHOW_TIMEOUT", "1"))
+SEND_TIMEOUT = float(os.environ.get("SESSIONVIEW_SHOW_SEND_TIMEOUT", "3"))
+NVIM_WAIT = float(os.environ.get("SESSIONVIEW_SHOW_NVIM_WAIT", "10"))
+FRAME = os.environ.get("SESSIONVIEW_FRAME_SOCK") or "sessionview-frame"
+ROOT = os.environ.get("SESSIONVIEW_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+EDITORS = ("nvim", "vim", "vi")
+SEP = "\t"
+ASKS = {"n": 0, "ms": 0.0}
+DEAD = []          # sockets that did not answer: (kind, path, why)
+SENT = []          # every command that changes something, in order
+
+
+def ask(cmd, timeout=None):
+    """One read-only ask: stdout, or None when it failed or timed out."""
+    t = time.time()
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout or ASK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None
+    except (FileNotFoundError, PermissionError):
+        return None
+    finally:
+        ASKS["n"] += 1
+        ASKS["ms"] += (time.time() - t) * 1000
+    return r.stdout if r.returncode == 0 else None
+
+
+def send(step, cmd, timeout=None, env=None):
+    """One command that changes something, bounded and recorded. True if it
+    went through."""
+    rec = {"step": step, "cmd": cmd}
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout or SEND_TIMEOUT, env=env)
+        rec["ok"] = r.returncode == 0
+        if not rec["ok"]:
+            rec["error"] = (r.stderr or r.stdout).strip()[:200]
+    except subprocess.TimeoutExpired:
+        rec.update(ok=False, error="no answer in %gs" % (timeout or SEND_TIMEOUT))
+    except (FileNotFoundError, PermissionError) as e:
+        rec.update(ok=False, error=str(e))
+    SENT.append(rec)
+    return rec["ok"]
+
+
+def tmux(server, *args):
+    return ask(["tmux", "-L", server, *args])
+
+
+def rows(out, n):
+    return [l.split(SEP) for l in (out or "").splitlines() if l.count(SEP) >= n - 1]
+
+
+# ---- servers ---------------------------------------------------------------
+def socket_dir():
+    return os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", "tmux-%d" % os.getuid())
+
+
+_SERVERS = []
+
+
+def servers():
+    if not _SERVERS:
+        _SERVERS.append(_servers())
+    return _SERVERS[0]
+
+
+def _servers():
+    """Every live tmux server by name, the frame's own left out. A socket
+    file with no server behind it is recorded in DEAD and skipped."""
+    live = []
+    for p in sorted(glob.glob(os.path.join(socket_dir(), "*"))):
+        try:
+            if not stat.S_ISSOCK(os.stat(p).st_mode):
+                continue
+        except OSError:
+            continue
+        name = os.path.basename(p)
+        if name == FRAME:
+            continue
+        if tmux(name, "list-sessions", "-F", "#{session_name}") is None:
+            DEAD.append(("tmux", p, "no server answered"))
+            continue
+        live.append(name)
+    return live
+
+
+CLIENT_F = SEP.join(["#{client_tty}", "#{session_name}", "#{session_id}",
+                     "#{window_name}", "#{window_index}", "#{window_id}",
+                     "#{pane_index}", "#{pane_id}", "#{window_zoomed_flag}",
+                     "#{client_activity}"])
+
+
+def place(server, r, via):
+    tty, sname, sid, wname, widx, wid, pidx, pid, zoom, act = r[:10]
+    return {"server": {"name": server},
+            "session": {"name": sname, "id": sid},
+            "window": {"name": wname, "index": int(widx), "id": wid},
+            "pane": {"index": int(pidx), "id": pid},
+            "zoom": zoom == "1",
+            "via": via}
+
+
+# ---- current: the frame's client ---------------------------------------------
+def frames():
+    """Each sessionview frame: its session, main pane, that pane's tty, and
+    when its own terminal was last used. The main pane is the option the
+    frame sets on itself, @sessionview_main_pane, never a position."""
+    out = tmux(FRAME, "list-sessions", "-F", "#{session_name}" + SEP + "#{session_attached}")
+    used = {}
+    for sess, act in rows(tmux(FRAME, "list-clients", "-F", "#{client_session}" + SEP + "#{client_activity}"), 2):
+        used[sess] = max(used.get(sess, 0), int(act or 0))
+    found = []
+    for name, attached in rows(out, 2):
+        main = (tmux(FRAME, "show-options", "-v", "-t", name, "@sessionview_main_pane") or "").strip()
+        if not main:
+            main = "=" + name + ":0.1"      # a frame from before the option
+        tty = (tmux(FRAME, "display-message", "-p", "-t", main, "#{pane_tty}") or "").strip()
+        found.append({"frame": name, "main_pane": main, "tty": tty,
+                      "attached": attached != "0", "used": used.get(name, 0)})
+    return found
+
+
+def current():
+    """Where the frame shows now. ONE client: the main pane of the frame
+    whose terminal was used most recently, never every frame."""
+    fs = frames()
+    if not fs:
+        return {"error": "no sessionview frame"}
+    use = [f for f in fs if f["attached"]]
+    if not use:                           # moving a frame nobody sees changes no screen
+        return {"error": "no sessionview frame on screen (%d detached)" % len(fs)}
+    f = max(use, key=lambda x: x["used"])
+    notes = []
+    if len(use) > 1:
+        notes.append("%d frames; took %s, the one used most recently" % (len(use), f["frame"]))
+    for server in servers():
+        for r in rows(tmux(server, "list-clients", "-F", CLIENT_F), 10):
+            if r[0] == f["tty"]:
+                p = place(server, r, "sessionview frame %s, main pane %s = %s"
+                          % (f["frame"], f["main_pane"], f["tty"]))
+                p["client"] = {"tty": f["tty"], "frame": f["frame"], "main_pane": f["main_pane"]}
+                p["notes"] = notes
+                return p
+    return {"error": "frame %s: its main pane %s (%s) is not a client of any live server"
+            % (f["frame"], f["main_pane"], f["tty"])}
+
+
+# ---- neovims -----------------------------------------------------------------
+NVIM_EXPR = ("json_encode({'pid': getpid(), 'pane': $TMUX_PANE, 'tmux': $TMUX,"
+             " 'bufs': map(getbufinfo({'buflisted': 1}), {_, b -> b.name}),"
+             " 'tab': tabpagenr(), 'cur': expand('%:p'),"
+             " 'tabs': map(range(1, tabpagenr('$')), {_, t -> map(tabpagebuflist(t),"
+             " {_, b -> getbufinfo(b)[0].name})})})")
+
+
+def nvim_sockets():
+    """Neovim's own sockets, and the ones sessionview and show-me name
+    nvim-show-* (socket dir: $TMPDIR, else $XDG_RUNTIME_DIR, else
+    ~/.local/run)."""
+    user = os.environ.get("USER", "")
+    dirs = [os.environ.get("TMPDIR") or "/tmp/"]
+    if os.environ.get("XDG_RUNTIME_DIR"):
+        dirs.append(os.environ["XDG_RUNTIME_DIR"])
+    dirs.append(os.path.expanduser("~/.local/run"))
+    pats = []
+    for d in dirs:
+        pats += [os.path.join(d, "nvim.%s" % user, "*", "nvim.*"), os.path.join(d, "nvim-show-*")]
+    if os.environ.get("XDG_RUNTIME_DIR"):
+        pats.append(os.path.join(os.environ["XDG_RUNTIME_DIR"], "nvim.*"))
+    socks = []
+    for pat in pats:
+        for p in sorted(glob.glob(pat)):
+            try:
+                if stat.S_ISSOCK(os.stat(p).st_mode) and p not in socks:
+                    socks.append(p)
+            except OSError:
+                pass
+    return socks
+
+
+def nvim_ask(sock):
+    out = ask(["nvim", "--server", sock, "--remote-expr", NVIM_EXPR])
+    if not out:
+        return None
+    try:
+        d = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    d["server"] = os.path.basename((d.get("tmux") or "").split(",")[0]) or None
+    d["sockets"] = [sock]
+    return d
+
+
+def neovims():
+    """Every Neovim, one ask per socket, deduped by pid (one Neovim can
+    answer on two sockets)."""
+    by_pid = {}
+    for s in nvim_sockets():
+        d = nvim_ask(s)
+        if d is None:
+            DEAD.append(("nvim", s, "no answer"))
+            continue
+        if d["pid"] in by_pid:
+            by_pid[d["pid"]]["sockets"].append(s)
+        else:
+            by_pid[d["pid"]] = d
+    return list(by_pid.values())
+
+
+def nvim_view(n, path):
+    tabs = [i + 1 for i, names in enumerate(n.get("tabs", [])) if path in names]
+    return {"pid": n["pid"], "server": n["server"], "pane": n.get("pane") or None,
+            "has_file": path in n.get("bufs", []),
+            "tabs_showing": tabs, "current_tab": n.get("tab"),
+            "shown": n.get("cur") == path, "sockets": n["sockets"]}
+
+
+# ---- target -------------------------------------------------------------------
+def git(top, *args):
+    out = ask(["git", "-C", top, *args])
+    return out.strip() if out else ""
+
+
+def front_matter(path):
+    fm = {}
+    try:
+        with open(path) as f:
+            if f.readline().strip() != "---":
+                return fm
+            for line in f:
+                if line.strip() == "---":
+                    break
+                if ":" in line and not line.startswith(" "):
+                    k, v = line.split(":", 1)
+                    fm[k.strip()] = v.strip().strip('"')
+    except OSError:
+        pass
+    return fm
+
+
+def project_of(raw_remote):
+    """The project whose PROJECT.md git_url is the repo's RAW remote (the raw
+    remote matches git_url exactly; `git remote get-url` may rewrite it)."""
+    out = ask(["tm", "store", "list", "-f", "json"], timeout=max(ASK_TIMEOUT, 3))
+    try:
+        stores = json.loads(out or "[]")
+    except json.JSONDecodeError:
+        stores = []
+    for s in stores:
+        for pm in glob.glob(os.path.join(s.get("path", ""), "projects", "*", "PROJECT.md")):
+            fm = front_matter(pm)
+            if raw_remote and fm.get("git_url") == raw_remote:
+                return {"name": fm.get("name") or os.path.basename(os.path.dirname(pm)),
+                        "code": fm.get("code"), "store": s.get("name"),
+                        "store_path": s.get("path"), "server": s.get("socket")}
+    return None
+
+
+def session_tool():
+    return os.path.join(ROOT, "bin", "sessionview-session")
+
+
+EDITOR_WINDOW = "editor"
+
+
+def editor_window(project):
+    """sessionview's windows config: the window named `editor`, when it runs
+    an editor (`sessionview session NAME --list-windows`: `editor<TAB>nvim
+    README.md`). By name, not by command: the `project` window runs the
+    editor too, but on the project's file in the store, not in the repo."""
+    out = ask([session_tool(), project, "--list-windows"], timeout=max(ASK_TIMEOUT, 3)) or ""
+    for line in out.splitlines():
+        name, _, cmd = line.partition("\t")
+        if name.strip() == EDITOR_WINDOW and cmd.split()[:1] and os.path.basename(cmd.split()[0]) in EDITORS:
+            return name.strip(), cmd.strip()
+    return None, None
+
+
+def target_by_rule(path, vims):
+    t = {"file": path, "notes": []}
+    open_in = [nvim_view(n, path) for n in vims if path in n.get("bufs", [])]
+    for o in open_in:                     # every Neovim that has it, with its full address
+        if o["server"] and o["pane"]:
+            a = (tmux(o["server"], "display-message", "-p", "-t", o["pane"],
+                      SEP.join(["#{session_name}", "#{window_name}", "#{window_index}"])) or "").strip().split(SEP)
+            if len(a) == 3:
+                o.update(session=a[0], window=a[1], window_index=int(a[2]))
+    t["open_in"] = open_in
+
+    d = path if os.path.isdir(path) else os.path.dirname(path)
+    top = git(d, "rev-parse", "--show-toplevel") if os.path.isdir(d) else ""
+    raw = git(top, "config", "--get", "remote.origin.url") if top else ""
+    t["repo"] = {"top": top or None, "raw_remote": raw or None}
+    proj = project_of(raw) if raw else None
+    t["project"] = proj
+
+    if proj:
+        server, session = proj["server"], proj["name"]
+        why = "project %s (store %s) by its git url" % (proj["name"], proj["store"])
+    elif top:
+        server, session = None, os.path.basename(top)
+        why = "a repo with no project: a session named %s, if one exists" % session
+    else:
+        server, session = "default", "main"
+        why = "no repo: main on the default server"
+    t["why"] = why
+
+    live = servers()
+    if server is None:                    # what exists wins: that session on any server
+        for s in live:
+            if tmux(s, "has-session", "-t", "=" + session) is not None:
+                server = s
+                break
+    exists = server in live and tmux(server, "has-session", "-t", "=" + session) is not None
+    t["server"] = {"name": server, "exists": server in live}
+    t["session"] = {"name": session, "exists": exists}
+
+    wname, wcmd = editor_window(session) if proj else (None, None)
+    t["window"] = {"name": wname, "command": wcmd, "exists": False}
+    t["pane"] = {"index": 0, "id": None, "exists": False}
+    t["zoom"] = False
+    if not wname:
+        t["unruled"] = True
+        t["notes"].append("no sessionview window config names a window for this file")
+        return t
+    if not exists:
+        return t
+
+    wins = rows(tmux(server, "list-windows", "-t", "=" + session, "-F",
+                     SEP.join(["#{window_name}", "#{window_index}", "#{window_id}",
+                               "#{window_zoomed_flag}", "#{window_active}"])), 5)
+    match = [w for w in wins if w[0] == wname]
+    if len(match) > 1:
+        t["notes"].append("%d windows named %s; took index %s" % (len(match), wname, match[0][1]))
+    if not match:
+        return t
+    w = match[0]
+    t["window"].update(index=int(w[1]), id=w[2], exists=True)
+
+    panes = rows(tmux(server, "list-panes", "-t", w[2], "-F",
+                      SEP.join(["#{pane_id}", "#{pane_index}", "#{pane_current_command}",
+                                "#{window_zoomed_flag}", "#{pane_active}"])), 5)
+    nv = [p for p in panes if p[2] in EDITORS]
+    pick = None
+    if len(nv) > 1:
+        withfile = [p for p in nv if any(o["pane"] == p[0] and o["server"] == server for o in open_in)]
+        pick = (withfile or [p for p in nv if p[1] == "0"] or nv)[0]
+        t["notes"].append("%d Neovims in window %s (the one with the file, else pane 0): took %s"
+                          % (len(nv), wname, pick[0]))
+    elif nv:
+        pick = nv[0]
+    if not pick:
+        t["notes"].append("window %s runs no Neovim" % wname)
+        return t
+    t["pane"].update(index=int(pick[1]), id=pick[0], exists=True)
+    zoomed_pane = [p for p in panes if p[3] == "1" and p[4] == "1"]
+    # another pane's zoom is undone; the file's own pane keeps its zoom
+    t["zoom"] = bool(zoomed_pane and zoomed_pane[0][0] == pick[0])
+    vim = [nvim_view(n, path) for n in vims if n.get("pane") == pick[0] and n.get("server") == server]
+    t["nvim"] = vim[0] if vim else {"pane": pick[0], "note": "no socket answered for this pane"}
+    return t
+
+
+def target(path, vims=None):
+    """Where FILE belongs. A Neovim that already has it open wins over the
+    repo rule: showing what is open moves the least. The rule's answer is
+    kept as `by_rule` when the two differ."""
+    path = os.path.realpath(os.path.expanduser(path))
+    vims = neovims() if vims is None else vims
+    rule = target_by_rule(path, vims)
+    opened = [o for o in rule["open_in"] if o.get("server") and o.get("pane") and o.get("session")]
+    if not opened:
+        return rule
+    rp = (rule["server"]["name"], (rule.get("pane") or {}).get("id"))
+    win = ([o for o in opened if (o["server"], o["pane"]) == rp]
+           or [o for o in opened if o["shown"]] or opened)[0]
+    out = {"file": rule["file"], "repo": rule["repo"], "project": rule["project"],
+           "open_in": rule["open_in"], "notes": [],
+           "why": "open in Neovim pid %s: an open Neovim wins" % win["pid"]}
+    w = (tmux(win["server"], "display-message", "-p", "-t", win["pane"],
+              SEP.join(["#{session_id}", "#{window_id}", "#{window_zoomed_flag}", "#{pane_index}"])) or "").strip().split(SEP)
+    sid, wid, zoomed, pidx = (w + ["", "", "0", "0"])[:4]
+    panes = rows(tmux(win["server"], "list-panes", "-t", wid, "-F",
+                      "#{pane_id}" + SEP + "#{pane_active}"), 2) if wid else []
+    active = [p[0] for p in panes if p[1] == "1"]
+    out["server"] = {"name": win["server"], "exists": True}
+    out["session"] = {"name": win["session"], "id": sid, "exists": True}
+    out["window"] = {"name": win["window"], "index": win["window_index"], "id": wid, "exists": True}
+    out["pane"] = {"index": int(pidx or 0), "id": win["pane"], "exists": True}
+    out["zoom"] = bool(zoomed == "1" and active and active[0] == win["pane"])
+    out["nvim"] = win
+    if len(opened) > 1:
+        out["notes"].append("open in %d Neovims; took pid %s" % (len(opened), win["pid"]))
+    if (win["server"], win["pane"]) != rp:
+        out["by_rule"] = {"server": rule["server"]["name"], "session": rule["session"]["name"],
+                          "window": rule["window"].get("name"), "pane": (rule.get("pane") or {}).get("id")}
+    return out
+
+
+# ---- compare ------------------------------------------------------------------
+LEVELS = ["server", "session", "window", "pane", "zoom"]
+
+
+def key(level, p):
+    v = p.get(level)
+    if level == "zoom":
+        return bool(v)
+    if level == "pane":
+        return (v or {}).get("id")
+    return (v or {}).get("name")
+
+
+def compare(cur, tgt):
+    for i, lv in enumerate(LEVELS):
+        if key(lv, cur) != key(lv, tgt):
+            return {"first_difference": lv, "change": LEVELS[i:] + ["nvim"]}
+    nv = tgt.get("nvim") or {}
+    if nv and not nv.get("shown"):
+        return {"first_difference": "nvim", "change": ["nvim"]}
+    return {"first_difference": None, "change": []}
+
+
+def missing(tgt):
+    """What has to be made before the switch: [] when everything is there."""
+    out = []
+    if not tgt["session"]["exists"]:
+        out.append("session")
+    if not tgt["window"].get("exists"):
+        out.append("window")
+    return out
+
+
+# ---- the switch -----------------------------------------------------------------
+def tmux_bin():
+    # the client re-execs with ITS environment, so tmux is named by path
+    return shutil.which("tmux") or "tmux"
+
+
+def plan(cur, tgt):
+    """The commands, in order, that bring the frame's client from cur to
+    tgt, each as (step, argv). The target's own side (window, zoom, pane) is
+    set first, so the client lands on it when it arrives; then the client
+    moves (server, else session); then the Neovim. Only what differs is
+    sent, so a second run sends nothing."""
+    S, N = tgt["server"]["name"], tgt["session"]["name"]
+    W, P = tgt["window"].get("id"), tgt["pane"].get("id")
+    tty = cur["client"]["tty"]
+    steps = []
+    now_w = (tmux(S, "display-message", "-p", "-t", "=" + N + ":", "#{window_id}") or "").strip()
+    w_state = (tmux(S, "display-message", "-p", "-t", W, "#{pane_id}" + SEP + "#{window_zoomed_flag}")
+               or "").strip().split(SEP) if W else []
+    active, zoomed = (w_state + ["", "0"])[:2]
+    if W and now_w != W:
+        steps.append(("window", ["tmux", "-L", S, "select-window", "-t", W]))
+    if P and zoomed == "1" and active and active != P:
+        steps.append(("zoom", ["tmux", "-L", S, "resize-pane", "-Z", "-t", active]))
+    if P and active != P:
+        steps.append(("pane", ["tmux", "-L", S, "select-pane", "-t", P]))
+    if cur["server"]["name"] != S:
+        steps.append(("server", ["tmux", "-L", cur["server"]["name"], "detach-client", "-t", tty, "-E",
+                                 "exec " + shlex.quote(tmux_bin()) + " -L " + shlex.quote(S)
+                                 + " attach -t =" + shlex.quote(N)]))
+    elif cur["session"]["name"] != N:
+        steps.append(("session", ["tmux", "-L", S, "switch-client", "-c", tty, "-t", "=" + N]))
+    if any(s[0] in ("server", "session") for s in steps):
+        steps.append(("look", look_cmd(S, N)))
+    nv = tgt.get("nvim") or {}
+    if not nv.get("shown"):
+        sock = (nv.get("sockets") or [None])[0]
+        steps.append(("nvim", ["nvim", "--server", sock or "(no socket answered)", "--remote", tgt["file"]]))
+    return steps
+
+
+def look_cmd(server, session):
+    """sessionview's bar on SESSION, as a sidebar jump gives it (frame.conf
+    is a session-scoped snippet; every line is a set, so it is idempotent)."""
+    conf = os.path.join(ROOT, "tmux", "frame.conf")
+    return ["sh", "-c", 'S="$1"; L="$3"; tmux() { command tmux -L "$L" "$@"; }; [ -f "$2" ] && . "$2"',
+            "sh", session, conf, server]
+
+
+def make(tgt):
+    """Make the missing session and editor window with sessionview-session,
+    on the project's server and store. Returns what was made, or None."""
+    proj = tgt.get("project") or {}
+    S, N, wname = tgt["server"]["name"], tgt["session"]["name"], tgt["window"]["name"]
+    base = [session_tool(), N, "--socket", S] + (["--store", proj["store_path"]] if proj.get("store_path") else [])
+    made = []
+    if not tgt["session"]["exists"]:
+        if not send("make", base, timeout=60):
+            return None
+        made.append("session %s" % N)
+    names = [r[0] for r in rows(tmux(S, "list-windows", "-t", "=" + N, "-F", "#{window_name}" + SEP), 1)]
+    if wname not in names:
+        if not send("make", base + ["--window", wname], timeout=60):
+            return None
+        made.append("window %s in %s" % (wname, N))
+    return made
+
+
+def wait_target(path):
+    """After a make: read the target again until its Neovim answers."""
+    end = time.time() + NVIM_WAIT
+    while True:
+        _SERVERS.clear()
+        t = target(path)
+        if (t.get("nvim") or {}).get("sockets") or time.time() > end:
+            return t
+        time.sleep(0.3)
+
+
+def client_on(server, tty, wait=2.0):
+    end = time.time() + wait
+    while time.time() < end:
+        out = tmux(server, "list-clients", "-F", "#{client_tty}") or ""
+        if tty in out.split():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def short(tgt):
+    f, top = tgt["file"], (tgt.get("repo") or {}).get("top")
+    if top and f.startswith(top + os.sep):
+        return os.path.basename(top) + "/" + os.path.relpath(f, top)
+    home = os.path.expanduser("~")
+    return "~" + f[len(home):] if f.startswith(home + os.sep) else f
+
+
+def switch(cur, tgt, by="", dry=False):
+    """Run the plan. Returns the result dict; result is shown, already
+    there, would, or failed."""
+    res = {"made": [], "current": cur, "target": tgt}
+    need = missing(tgt)
+    if need:
+        if dry:
+            res.update(result="would", would_make=need,
+                       note="would make the %s, then switch to it" % " and ".join(need))
+            return res
+        made = make(tgt)
+        if made is None:
+            res.update(result="failed", error="could not make the %s" % " and ".join(need))
+            return res
+        res["made"] = made
+        tgt = res["target"] = wait_target(tgt["file"])
+        if missing(tgt) or not tgt["pane"].get("exists"):
+            res.update(result="failed", error="made %s, but the window has no Neovim yet" % ", ".join(made))
+            return res
+    res["compare"] = compare(cur, tgt)
+    steps = plan(cur, tgt)
+    res["plan"] = [{"step": s, "cmd": c} for s, c in steps]
+    if dry:
+        res["result"] = "would" if steps else "already there"
+        return res
+    if not steps:
+        res["result"] = "already there"
+        return res
+    S, tty = tgt["server"]["name"], cur["client"]["tty"]
+    for s, c in steps:
+        timeout = SEND_TIMEOUT
+        if s == "nvim" and not (tgt.get("nvim") or {}).get("sockets"):
+            SENT.append({"step": s, "cmd": c, "ok": False, "error": "the Neovim in pane %s did not answer" % tgt["pane"]["id"]})
+            break
+        if s == "look":                   # the bar is cosmetic: a failure is reported, never fatal
+            send(s, c, timeout, env=dict(os.environ, SESSIONVIEW_ROOT=ROOT))
+            continue
+        if not send(s, c, timeout):
+            break
+        if s == "server" and not client_on(S, tty):
+            SENT[-1].update(ok=False, error="the client did not arrive on %s" % S)
+            break
+    ok = all(r["ok"] for r in SENT if r["step"] not in ("look", "message"))
+    if SENT or res["made"]:                # any change, the Neovim's included, says who asked
+        text = "shown: " + short(tgt) + (" · asked by " + by if by else "")
+        if res["made"]:
+            text += " · made " + ", ".join(res["made"])
+        send("message", ["tmux", "-L", S, "display-message", "-c", tty, "-d", "2000", text.replace("#", "##")])
+    _SERVERS.clear()
+    after = current()
+    there = "error" not in after and all(key(lv, after) == key(lv, tgt) for lv in ("server", "session", "window", "pane"))
+    res["after"] = after
+    res["result"] = "shown" if ok and there else "failed"
+    if ok and not there:
+        res["error"] = "every step went through, but the frame is not at the target"
+    return res
+
+
+# ---- output -------------------------------------------------------------------
+def show_place(title, p):
+    print(title)
+    if "error" in p:
+        print("  error    %s" % p["error"])
+        return
+    sv, se, w, pa = p.get("server", {}), p.get("session", {}), p.get("window", {}), p.get("pane", {})
+    ex = lambda d: "" if d.get("exists", True) else "   (missing)"
+    print("  server   %-26s%s" % (sv.get("name"), ex(sv)))
+    print("  session  %-26s%s%s" % (se.get("name"), se.get("id", ""), ex(se)))
+    wi = "index %s " % w["index"] if w.get("index") is not None else ""
+    print("  window   %-26s%s%s%s" % (w.get("name") or "-", wi, w.get("id", "") or "", ex(w)))
+    pi = "index %s" % pa.get("index") if pa.get("index") is not None else ""
+    print("  pane     %-26s%s%s" % (pa.get("id") or "-", pi, ex(pa)))
+    print("  zoom     %s" % ("yes" if p.get("zoom") else "no"))
+    if p.get("client"):
+        print("  client   %s (frame %s, main pane %s)" % (p["client"]["tty"], p["client"]["frame"], p["client"]["main_pane"]))
+    for k in ("via", "why"):
+        if p.get(k):
+            print("  %-8s %s" % (k, p[k]))
+    nv = p.get("nvim")
+    if nv and "pid" in nv:
+        print("  nvim     pid %s  file %s  shown %s  tabs %s (current %s)" % (
+            nv["pid"], "open" if nv["has_file"] else "not open", "yes" if nv["shown"] else "no",
+            nv["tabs_showing"] or "-", nv["current_tab"]))
+    for o in p.get("open_in", []):
+        print("  open in  nvim pid %s: %s / %s / %s / %s%s" % (
+            o["pid"], o["server"], o.get("session"), o.get("window"), o["pane"], "  (shown)" if o["shown"] else ""))
+    if p.get("by_rule"):
+        b = p["by_rule"]
+        print("  by rule  %s / %s / %s / %s" % (b["server"], b["session"], b["window"] or "-", b["pane"] or "-"))
+    for n in p.get("notes", []):
+        print("  note     %s" % n)
+
+
+def cmdline(c):
+    return " ".join(shlex.quote(x) for x in c)
+
+
+def footer():
+    print("  asks     %d in %.0f ms%s" % (ASKS["n"], ASKS["ms"],
+          "; skipped %d dead socket(s)" % len(DEAD) if DEAD else ""))
+
+
+def usage(err=None):
+    if err:
+        print("sessionview show: %s" % err, file=sys.stderr)
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    print(__doc__.strip())
+    return 0
+
+
+def main(argv):
+    if any(a in ("-h", "--help") for a in argv):
+        return usage()
+    as_json = dry = porcelain = False
+    mode, by, files = "show", "", []
+    it = iter(argv)
+    for a in it:
+        if a == "--json":
+            as_json = True
+        elif a == "--porcelain":
+            porcelain = True
+        elif a == "--dry-run":
+            dry = True
+        elif a == "--current":
+            mode = "current"
+        elif a == "--target":
+            mode = "target"
+        elif a == "--by":
+            by = next(it, "")
+            if not by:
+                return usage("--by needs a NAME")
+        elif a.startswith("-"):
+            return usage("unknown flag %s" % a)
+        else:
+            files.append(a)
+    if mode == "current":
+        if files:
+            return usage("--current takes no FILE")
+        out = current()
+        code = 3 if "error" in out else 0
+    else:
+        if len(files) != 1:
+            return usage("one FILE, please")
+        path = os.path.realpath(os.path.expanduser(files[0]))
+        if not os.path.exists(path):
+            return usage("no such file: %s" % files[0])
+        if mode == "target":
+            out = target(path)
+            code = 0
+        else:
+            cur = current()
+            tgt = target(path)
+            if "error" in cur:
+                out, code = {"result": "not ours", "error": cur["error"], "target": tgt}, 3
+            elif tgt.get("unruled"):
+                out, code = {"result": "not ours", "error": "; ".join(tgt["notes"]),
+                             "current": cur, "target": tgt}, 3
+            else:
+                out = switch(cur, tgt, by=by, dry=dry)
+                code = 1 if out["result"] == "failed" else 0
+            out["sent"] = SENT
+    if porcelain:
+        if mode != "show":
+            return usage("--porcelain goes with FILE, not --current or --target")
+        t = out.get("target") or {}
+        nv = t.get("nvim") or {}
+        print("\t".join(str(v or "-") for v in (
+            out["result"].replace(" ", "-"), (t.get("server") or {}).get("name"),
+            (t.get("session") or {}).get("name"), (t.get("window") or {}).get("id"),
+            (t.get("pane") or {}).get("id"), (nv.get("sockets") or [None])[0])))
+        return code
+    if as_json:
+        out["asks"] = {"n": ASKS["n"], "ms": round(ASKS["ms"]), "dead": DEAD}
+        print(json.dumps(out, indent=1))
+        return code
+    if mode == "current":
+        show_place("current", out)
+    elif mode == "target":
+        show_place("target " + out["file"], out)
+    else:
+        for m in out.get("made", []):
+            print("made     %s" % m)
+        if out.get("current"):
+            show_place("current", out["current"]); print()
+        show_place("target " + out["target"]["file"], out["target"]); print()
+        c = out.get("compare")
+        if c:
+            print("compare  " + ("first difference: %s" % c["first_difference"] if c["first_difference"] else "no difference"))
+        if dry:
+            for p in out.get("plan", []):
+                print("would    %-8s %s" % (p["step"], cmdline(p["cmd"])))
+            if out.get("note"):
+                print("would    %s" % out["note"])
+        for r in out.get("sent", []):
+            print("sent     %-8s %s  %s" % (r["step"], cmdline(r["cmd"]), "ok" if r["ok"] else "FAILED: " + r.get("error", "")))
+        print("result   %s%s" % (out["result"], ": " + out["error"] if out.get("error") else ""))
+    footer()
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

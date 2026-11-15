@@ -12,6 +12,8 @@
 #   sessionview config     settings: no verb opens the screen (get/set/list ...)
 #   sessionview session NAME    open a project session with its standard tabs
 #   sessionview messages PROJECT   a project's mail, read-only, in NeoMutt
+#   sessionview show FILE  bring FILE to the front: the frame moves to its
+#                    server, session, window and pane, and its Neovim shows it
 #   sessionview install    check requirements (--app: the macOS Dock app)
 #   sessionview autostart --status   which agent starts when sessionview opens
 #   sessionview terminal   the terminal sessionview opens in (--why: how chosen)
@@ -58,7 +60,7 @@ version() {
 case "${1:-}" in
   -h|--help|help) usage; exit 0;;
   --version) version; exit;;
-  config|session|messages|install|autostart|terminal|usermail|from|sidebar-toggle)
+  config|session|messages|install|autostart|terminal|usermail|from|sidebar-toggle|show)
     export SESSIONVIEW_ROOT; sub="$1"; shift; exec "$SESSIONVIEW_ROOT/bin/sessionview-$sub" "$@";;
   sidebar)
     case "${2:-}" in -h|--help) export SESSIONVIEW_ROOT; exec "$SESSIONVIEW_ROOT/bin/tmux-sidebar" "$2";; esac

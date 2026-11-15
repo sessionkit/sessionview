@@ -7,7 +7,7 @@
 # ONE answer, for the dock applet and anything else that launches a window, so
 # the choice lives in the SAME config cascade as every other setting
 # (sessionview-config: template > ~/.sessionkit/view/settings/view.json > store) instead
-# of a one-word sidecar no `sessionview-config dump` can see.
+# of a one-word sidecar no `sessionview config dump` can see.
 #
 # Order:
 #   1. `terminal` in the config cascade   - the user's stated preference

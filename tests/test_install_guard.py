@@ -35,14 +35,18 @@ INSTALLER = os.path.join(support.BIN, "sessionview-install")
 REPO = os.path.realpath(support.REPO)
 
 
+# Reached as `sessionview config|session|messages`: never linked.
+OFF_PATH = ("sessionview-config", "sessionview-session", "sessionview-messages")
+
+
 def tools():
     """The names the installer links: bin/sessionview* and tmux-sidebar,
-    executable files only (its own glob)."""
+    executable files only (its own glob), but for the three off PATH."""
     out = []
     for name in sorted(os.listdir(support.BIN)):
         p = os.path.join(support.BIN, name)
         if (name.startswith("sessionview") or name == "tmux-sidebar") and \
-                os.path.isfile(p) and os.access(p, os.X_OK):
+                os.path.isfile(p) and os.access(p, os.X_OK) and name not in OFF_PATH:
             out.append(name)
     return out
 
@@ -77,7 +81,7 @@ class ScratchBin(unittest.TestCase):
         # "Another checkout": the same tool names, as stand-in executables.
         self.other = os.path.join(self.home, "other-checkout", "bin")
         os.makedirs(self.other)
-        for name in tools():
+        for name in tools() + list(OFF_PATH):
             p = os.path.join(self.other, name)
             with open(p, "w") as f:
                 f.write("#!/bin/sh\nexit 0\n")
@@ -151,13 +155,13 @@ class InstallGuardTest(ScratchBin):
 
     def test_one_foreign_link_among_ours_is_refused(self):
         self.install()
-        p = os.path.join(self.bin, "sessionview-config")
+        p = os.path.join(self.bin, "sessionview-show")
         os.remove(p)
-        os.symlink(os.path.join(self.other, "sessionview-config"), p)
+        os.symlink(os.path.join(self.other, "sessionview-show"), p)
         before = snapshot(self.bin)
         r = self.install()
         self.assertRefused(r, before)
-        self.assertIn("sessionview-config", r.stderr)
+        self.assertIn("sessionview-show", r.stderr)
 
     def test_a_dangling_link_into_another_checkout_is_refused(self):
         os.makedirs(self.bin)
@@ -269,10 +273,10 @@ class CheckSeesForeignLinksTest(ScratchBin):
 
     def test_one_foreign_link_among_ours_is_the_one_warned(self):
         self.install()
-        p = os.path.join(self.bin, "sessionview-config")
+        p = os.path.join(self.bin, "sessionview-show")
         os.remove(p)
-        os.symlink(os.path.join(self.other, "sessionview-config"), p)
-        self.assertEqual(sorted(self.warned(self.check())), ["sessionview-config"])
+        os.symlink(os.path.join(self.other, "sessionview-show"), p)
+        self.assertEqual(sorted(self.warned(self.check())), ["sessionview-show"])
 
     def test_a_dangling_link_is_warned(self):
         os.makedirs(self.bin)
@@ -333,6 +337,75 @@ class LinkReplacesDirLinkTest(ScratchBin):
         self.assertNotEqual(r.returncode, 3, r.stderr)
         self.assertEqual(os.listdir(target), [], "the link step wrote into the directory")
         self.assertOurs()
+
+
+class OffPathHelpersTest(ScratchBin):
+    """config, session and messages are verbs of `sessionview`, not commands
+    of their own: the install links none of them, and removes the links an
+    older install of THIS checkout made. A link into another checkout, or a
+    file, under one of those names is not this install's: left as it is, with
+    no refusal and no WARN."""
+
+    def test_a_fresh_install_links_none_of_them(self):
+        r = self.install()
+        self.assertNotEqual(r.returncode, 3, r.stderr)
+        for name in OFF_PATH:
+            self.assertFalse(os.path.lexists(os.path.join(self.bin, name)), name)
+        self.assertIn(f"linked {len(tools())} tools into {self.bin}", r.stdout)
+
+    def old_links(self, relative=False):
+        """The links an install before the move made, into this checkout."""
+        os.makedirs(self.bin, exist_ok=True)
+        for name in OFF_PATH:
+            target = os.path.join(support.BIN, name)
+            if relative:
+                target = os.path.relpath(target, self.bin)
+            os.symlink(target, os.path.join(self.bin, name))
+
+    def test_an_install_removes_this_checkouts_old_links(self):
+        for relative in (False, True):
+            with self.subTest(relative=relative):
+                shutil.rmtree(self.bin, ignore_errors=True)
+                self.old_links(relative)
+                r = self.install()
+                self.assertNotEqual(r.returncode, 3, r.stderr)
+                for name in OFF_PATH:
+                    self.assertFalse(os.path.lexists(os.path.join(self.bin, name)), name)
+                self.assertOurs()
+
+    def test_a_rerun_over_a_full_old_install_removes_them(self):
+        # An older install linked every tool, the three included.
+        os.makedirs(self.bin)
+        for name in tools():
+            os.symlink(os.path.join(support.BIN, name), os.path.join(self.bin, name))
+        self.old_links()
+        r = self.install()
+        self.assertNotEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(sorted(snapshot(self.bin)), tools())
+
+    def test_another_checkouts_link_is_left_and_not_refused(self):
+        self.install()
+        for name in ("sessionview-config", "sessionview-messages"):
+            os.symlink(os.path.join(self.other, name), os.path.join(self.bin, name))
+        with open(os.path.join(self.bin, "sessionview-session"), "w") as f:
+            f.write("#!/bin/sh\n")
+        before = snapshot(self.bin)
+        r = self.install()
+        self.assertNotEqual(r.returncode, 3, r.stderr)
+        self.assertNotIn("refusing", r.stderr)
+        self.assertEqual(snapshot(self.bin), before)
+
+    def test_check_neither_warns_on_them_nor_removes_them(self):
+        self.install()
+        os.symlink(os.path.join(self.other, "sessionview-config"),
+                   os.path.join(self.bin, "sessionview-config"))
+        os.symlink(os.path.join(support.BIN, "sessionview-messages"),
+                   os.path.join(self.bin, "sessionview-messages"))
+        before = snapshot(self.bin)
+        r = self.install("--check")
+        self.assertEqual(snapshot(self.bin), before, "--check changed the bin dir")
+        for name in OFF_PATH:
+            self.assertNotIn(f"WARN     {name} ->", r.stdout)
 
 
 class MakeDefaultGoalTest(ScratchBin):

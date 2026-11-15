@@ -25,7 +25,10 @@ tab (lazygit). Change the look with `ready_glyph`, `ready_format` and
 
 - `q` reloads the sidebar (new code, new config). `Q` quits it.
 - `+` under the projects (or `p`) opens the project picker: type to
-  filter, Enter opens. `a` starts an agent. `?` lists the keys.
+  filter, Enter opens. Each project shows its eggs on the right; `^g`
+  shows only the projects with eggs (`^g` again shows all). Space marks a
+  row, `^a` marks every row shown, and Enter then opens every marked
+  project, landing on the first. `a` starts an agent. `?` lists the keys.
 - Right-click the agent's ROW for its menu. A right-click inside a pane
   goes to tmux (or to the opt-in agent pane menu, `pane_menu`).
 - In a menu, bright items are live and dim items do not apply here.

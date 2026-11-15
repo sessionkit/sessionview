@@ -5,11 +5,15 @@
 # convention: the key is the cksum of the tmux server's socket path, since
 # pane ids count per server); any nvim started by hand can be found through
 # its command line (--listen PATH) or $NVIM_LISTEN_ADDRESS. Prints the path.
+# Exit 2: usage, or no nvim socket for the pane (no such pane included).
 set -eu
-L=""; if [ "${1:-}" = "-L" ]; then L="-L $2"; shift 2; fi
-P="${1:?pane}"
+usage() { echo "usage: nvim-sock [-L SOCK] PANE" >&2; exit 2; }
+L=""; if [ "${1:-}" = "-L" ]; then [ -n "${2:-}" ] || usage; L="-L $2"; shift 2; fi
+P="${1:-}"
+[ -n "$P" ] || usage
 # shellcheck disable=SC2086
-ID="$(tmux $L display -p -t "$P" '#{pane_id}')"
+ID="$(tmux $L display -p -t "$P" '#{pane_id}' 2>/dev/null)" || {
+  echo "nvim-sock: no tmux pane $P" >&2; exit 2; }
 # shellcheck disable=SC2086
 PID="$(tmux $L display -p -t "$P" '#{pane_pid}')"
 # shellcheck disable=SC2086

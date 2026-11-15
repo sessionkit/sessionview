@@ -12,7 +12,7 @@
 #           the newest; main, made, only when the server has none)
 # --sock    the tmux server SESSION lives on (default: default; a store's is
 #           tm-store-NAME)
-# --width   sidebar columns (default: config width via sessionview-config, else 34)
+# --width   sidebar columns (default: config width via `sessionview config`, else 34)
 #
 # The outer server is invisible: status off, prefix None, mouse on, so every
 # key and click falls through - the sidebar pane sees its clicks, the right

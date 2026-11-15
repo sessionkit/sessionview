@@ -1,13 +1,13 @@
 #!/bin/bash
-# sessionview-session — open a tmux SESSION for a project, with its standard tabs.
+# sessionview session — open a tmux SESSION for a project, with its standard tabs.
 #
-#   sessionview-session NAME [--repo DIR] [--plain] [--print]
-#   sessionview-session NAME --list-windows        the configured windows that apply
+#   sessionview session NAME [--repo DIR] [--plain] [--print]
+#   sessionview session NAME --list-windows        the configured windows that apply
 #                                                  to NAME: "name<TAB>hint", one per line
-#   sessionview-session NAME --window WNAME        open ONE configured window in the
+#   sessionview session NAME --window WNAME        open ONE configured window in the
 #                                                  EXISTING session NAME (rc 3: WNAME is
 #                                                  not a configured window that applies)
-#   sessionview-session NAME --store-view STORENAME --socket SOCK --store PATH [--fresh]
+#   sessionview session NAME --store-view STORENAME --socket SOCK --store PATH [--fresh]
 #                                                  STORE MODE: NAME is the store's session,
 #                                                  its tabs the `store_windows` list (below)
 #
@@ -287,7 +287,7 @@ if [ "$NVIM" = 0 ]; then
 fi
 
 # -- the windows: config, not code -----------------------------------------------
-# `sessionview-config windows` = the cascade's `windows` list as TSV, sorted by
+# `sessionview config windows` = the cascade's `windows` list as TSV, sorted by
 # position (no field empty: `-` = no command). The predicates and dirs are
 # NAMES, tested here - better not to run code on the names of things;
 # adding one is a

@@ -1,0 +1,21 @@
+#!/bin/sh
+# nvim-reload SOCK FILE - after you edit FILE on disk, have nvim re-read it
+# (:checktime on that buffer), so the user never saves the old text over
+# yours. No keys are sent. With 'autoread' set (LazyVim sets it) a clean
+# buffer reloads silently; without it nvim asks the user.
+# Refused when the buffer has unsaved changes: nothing is reloaded, exit 1,
+# one line - tell the user (and next time, check nvim-modified first).
+# Exit 3: FILE is not open in nvim (nothing to reload). Exit 2: usage, or
+# no nvim on SOCK.
+set -eu
+S="${1:-}"; F="${2:-}"
+if [ -z "$S" ] || [ -z "$F" ]; then echo "usage: nvim-reload SOCK FILE" >&2; exit 2; fi
+case "$F" in /*) ;; *) F="$(pwd)/$F";; esac
+FV="$(printf %s "$F" | sed "s/'/''/g")"
+R="$(nvim --server "$S" --remote-expr "{t -> empty(t) ? 'not-open' : t.changed ? 'modified' : [execute('checktime ' . t.bufnr), 'checked'][1]}(get(filter(getbufinfo(), {_, b -> resolve(b.name) ==# resolve('$FV')}), 0, {}))")"
+case "$R" in
+  checked) echo "nvim-reload: $F checked against disk"; exit 0;;
+  modified) echo "nvim-reload: $F has unsaved changes in nvim; nothing reloaded - tell the user" >&2; exit 1;;
+  not-open) echo "nvim-reload: $F is not open in nvim; nothing to reload" >&2; exit 3;;
+esac
+echo "nvim-reload: unexpected answer from nvim: $R" >&2; exit 2

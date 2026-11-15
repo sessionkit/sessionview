@@ -354,5 +354,113 @@ class ControlCharacters(UntrustedBase):
         self.assertIn(CTRL_SHOWN + "\t", r.stdout)
 
 
+
+# Unicode format characters and separators: a bidi override (U+202E) and an
+# isolate (U+2066 ... U+2069) reorder the text printed after them; U+2028 and
+# U+2029 may break the line. Each wraps a harmless marker.
+FORMATS = ("\u202e", "\u2066", "\u2067", "\u2069", "\u2028", "\u2029", "\ufeff")
+BIDI_NAME = "bid\u202eMARK\u2066iso\u2069\ufeff"
+BIDI_SHOWN = "bidMARKiso"
+SEP_NAME = "sep\u2028line\u2029par"
+SEP_SHOWN = "seplinepar"
+ZWJ = "\u200d"
+# an emoji ZWJ sequence: woman, ZWJ, laptop
+EMOJI = "\U0001f469\u200d\U0001f4bb"
+
+
+class FormatCharacters(UntrustedBase):
+    """An untrusted window name reaches the terminal with no format character
+    (bidi embeddings, overrides, isolates and marks, a BOM) and no line or
+    paragraph separator in it. A ZERO WIDTH JOINER is kept (it joins emoji
+    glyphs and cannot reorder or break a line), but a name made only of it is
+    no name."""
+
+    def setUp(self):
+        super().setUp()
+        write_json(self.dot, planted(extra_windows=(
+            {"name": BIDI_NAME, "position": 3, "when": "always", "cwd": "root", "command": PLANT},
+            {"name": SEP_NAME, "position": 4, "when": "always", "cwd": "root", "command": PLANT},
+            {"name": "\u202e\u2067\u200e", "position": 5, "when": "always", "cwd": "root"},
+            {"name": " " + ZWJ + " ", "position": 6, "when": "always", "cwd": "root"},
+        )))
+
+    def assertClean(self, text, where):
+        for c in FORMATS:
+            self.assertNotIn(c, text, f"{where} holds {c!r}: {text!r}")
+
+    def test_the_notice_and_the_rows_carry_no_format_character(self):
+        rows, err = self.rows("--project", self.repo)
+        r = self.cli("windows", "--project", self.repo)
+        self.assertClean(r.stdout, "windows rows")
+        self.assertClean(err, "the notice")
+        self.assertIn(f"{self.dot}: windows[{BIDI_SHOWN}].command ignored", err)
+        self.assertIn(f"{self.dot}: windows[{SEP_SHOWN}].command ignored", err)
+        self.assertEqual(rows[BIDI_SHOWN][:5], ["3", BIDI_SHOWN, "always", "root", "-"])
+
+    def test_a_name_of_format_characters_or_a_joiner_only_is_no_name(self):
+        _, err = self.rows("--project", self.repo)
+        self.assertIn("windows[4]: needs a name (skipped)", err)
+        self.assertIn("windows[5]: needs a name (skipped)", err)
+
+    def test_the_print_plan_carries_no_format_character(self):
+        plan = self.project_plan()
+        self.assertClean(plan, "the --print plan")
+        self.assertIn(f"windows[{BIDI_SHOWN}].command ignored", plan)
+
+
+class JoinerInATrustedName(UntrustedBase):
+    """An emoji ZWJ sequence in a name from the home file is shown whole."""
+
+    def setUp(self):
+        super().setUp()
+        home = dict(self.template)
+        home["windows"] = list(self.template["windows"]) + [
+            {"name": EMOJI, "position": 90, "when": "always", "cwd": "root"}]
+        write_json(self.cfg, home)
+
+    def test_the_emoji_sequence_survives(self):
+        rows, _ = self.rows()
+        self.assertIn(EMOJI, rows)
+        self.assertEqual(rows[EMOJI][1], EMOJI)
+
+
+# A directory name that holds ESC [ 31 m and a bidi override: the walk-up
+# from --project reaches the layer inside it, and the path is printed.
+EVIL_DIR = "dir\x1b[31m\u202eMARK"
+EVIL_SHOWN = "dir[31mMARK"
+
+
+class LayerPathPrinted(UntrustedBase):
+    """A layer that is skipped is named by its path, printed safely: ESC and
+    U+202E in a directory name never reach the terminal."""
+
+    def setUp(self):
+        super().setUp()
+        os.remove(self.dot)
+        self.evil = os.path.join(self.home, "work", EVIL_DIR)
+        os.makedirs(self.evil)
+        self.layer = os.path.join(self.evil, ".sessionview")
+        # the walk-up resolves the path (macOS: /var is /private/var)
+        self.shown = os.path.join(os.path.realpath(self.home), "work", EVIL_SHOWN, ".sessionview")
+
+    def skipped(self, body):
+        with open(self.layer, "w", encoding="utf-8") as f:
+            f.write(body)
+        r = self.cli("windows", "--project", self.evil)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for c in ("\x1b", "\u202e"):
+            self.assertNotIn(c, r.stderr, f"the skip message holds {c!r}: {r.stderr!r}")
+        return r.stderr
+
+    def test_a_parse_error_names_the_path_safely(self):
+        err = self.skipped("{not json")
+        self.assertIn(f"sessionview-config: {self.shown}: ", err)
+        self.assertIn("(skipped)", err)
+
+    def test_a_json_list_names_the_path_safely(self):
+        err = self.skipped("[1, 2]")
+        self.assertIn(f"sessionview-config: {self.shown}: not a JSON object (skipped)", err)
+
+
 if __name__ == "__main__":
     unittest.main()

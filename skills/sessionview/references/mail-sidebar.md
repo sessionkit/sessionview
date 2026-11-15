@@ -18,6 +18,6 @@ Needs: `notmuch` on PATH, the folder under its `database.path`, and the
 `Type` and `Project` headers indexed. Without the index the Asks rows are
 every mail to `NAME+ask` (replies too) and the rc says so; without notmuch
 the tab is the one folder and the sidebar is hidden.
-`sessionview-messages NAME --store STORE --print` names which, and shows
+`sessionview messages NAME --store STORE --print` names which, and shows
 the rc. The look (width, format, keys) is `config/neomuttrc`;
 `~/.sessionkit/view/settings/neomuttrc` is sourced last and wins.

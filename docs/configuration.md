@@ -17,7 +17,7 @@ files and variables that set it and where each one lives.
   the new home, once.
 
 `<checkout>` below is your clone, or the package's data directory for an
-install from PyPI. `sessionview-config dump --where` prints every key, its
+install from PyPI. `sessionview config dump --where` prints every key, its
 value and the file that set it.
 
 ## [Settings][settings]
@@ -36,8 +36,8 @@ One cascade of JSON objects. A later layer wins.
 - **Layers 3 and 4 are untrusted**, because a cloned repo can carry one.
   They never set a key that runs something. Each key they drop is named on
   stderr with its file.
-- **`sessionview-config set KEY VALUE`** writes layer 2 only.
-  `sessionview-config unset KEY` takes a key back to its default.
+- **`sessionview config set KEY VALUE`** writes layer 2 only.
+  `sessionview config unset KEY` takes a key back to its default.
 - **`SESSIONVIEW_CONFIG=<file>`** puts layer 2 somewhere else.
   `SIDEBAR_CONFIG` is the old name and still works.
 - **An older install's settings are never read.** While they are still
@@ -65,7 +65,7 @@ these that is not empty wins:
 6. the word `sessionview`
 
 `sessionview from` prints the name in effect. Set yours with
-`sessionview-config set mail_from <you>`.
+`sessionview config set mail_from <you>`.
 
 ## The messages tab
 
@@ -105,7 +105,7 @@ repository.
 
 ## Project sessions
 
-`sessionview-session` builds a project's tmux session with its tabs.
+`sessionview session` builds a project's tmux session with its tabs.
 
 - The tabs come from the `windows` key; the store view's from
   `store_windows`. Your pins are `window_pins`.
@@ -127,7 +127,8 @@ repository.
   frame loads it when the `pane_menu` key is `true`, and an Option +
   right-click on your tmux in the frame reaches it. Without the frame,
   `source-file -q` it from `~/.tmux.conf`. It needs tmux's `mouse`
-  option on, the default since tmux 3.8.
+  option on, the default since tmux 3.8. On a remote tab its Kill
+  refuses, with a message on the bar.
 - `tmux set -g @sessionview_tab_close 0`: no close `×` on the tabs.
 
 ## Paths
@@ -175,7 +176,7 @@ test ! -e "$new/view.json" && mkdir -p "$new" &&
 mv "$old/config.json" "$new/view.json" &&
 find "$old" -maxdepth 1 \( -name 'config.json.before-*' -o -name neomuttrc \) -exec mv {} "$new/" ';' &&
 find "$old" -maxdepth 0 -empty -delete
-sessionview-config get width --where
+sessionview config get width --where
 ```
 
 The last line checks the move: it must name `view.json`. The `find` lines
@@ -186,7 +187,7 @@ remove the folder.
 
 - **Not moved yet.** While the old `config.json` is there and `view.json`
   is not, sessionview reads nothing and makes nothing.
-  `sessionview-config` exits 3, names both paths and prints this move with
+  `sessionview config` exits 3, names both paths and prints this move with
   your paths filled in. The sidebar shows the same message as a note and
   runs on the template.
 - **Both there.** If `view.json` and the old `config.json` are both there,

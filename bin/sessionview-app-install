@@ -76,8 +76,9 @@ echo "drag it to your Dock; one click opens sessionview in your preferred termin
 # The ad-hoc signature is a fresh identity every build, and macOS keys TCC
 # permissions to it -- so a rebuild silently revokes the Accessibility tick
 # that `fullscreen` needs on Terminal.app. Say so, every time, rather than
-# letting it look like the feature broke.
-if [ "$(command -v sessionview-config >/dev/null 2>&1 && sessionview-config get fullscreen 2>/dev/null)" = "true" ]; then
+# letting it look like the feature broke. The config tool is asked BY PATH, in
+# this checkout: it is not on PATH, and SESSIONVIEW_ROOT may be unset here.
+if [ "$("$ROOT/bin/sessionview-config" get fullscreen 2>/dev/null)" = "true" ]; then
   echo
   echo "note: fullscreen is on, and this REBUILD resets its Accessibility permission."
   echo "      System Settings > Privacy & Security > Accessibility > turn SessionView back on."

@@ -10,7 +10,8 @@ help:  ## list the targets; changes nothing
 	@echo "make check     check requirements only; change nothing"
 	@echo "make app       build and install the macOS Dock app"
 	@echo "make test      run the suite"
-	@echo "make build | release | changelog | push | publish | scan   releases (see the Makefile)"
+	@echo "make pypi-dist the release wheel + sdist from tag v<version>, README links pinned to it (publish runs it)"
+	@echo "make build | pypi-dist | release | changelog | push | publish | scan   releases (see the Makefile)"
 
 install:
 	@bin/sessionview-install
@@ -34,17 +35,52 @@ PYTHON ?= $(shell for p in python3.14 python3.13 python3.12 python3.11 python3; 
 test:
 	@if [ -z "$(PYTHON)" ]; then echo "make test: no python3 >= 3.11 on PATH (brew install python@3.14, or: uv python install 3.14)" >&2; exit 1; fi
 	@echo "make test: $$($(PYTHON) -c 'import sys; print(sys.executable, sys.version.split()[0])')"
-	@$(PYTHON) -B -m unittest discover -s tests -t . -v
+	@$(PYTHON) -B -m tests._runner discover -s tests -t . -v
 
 .PHONY: help install check app test
 
 # Releases. The ONE version lives in pyproject.toml; scripts/release.py bumps it
 # with uv and mirrors it into the plugin manifest(s) and __version__.
 BUMP ?= patch
-.PHONY: build release changelog push publish
+.PHONY: build pypi-dist release changelog push publish
 
-build:  ## wheel + sdist into dist/
+build:  ## wheel + sdist into dist/, from the checkout as it is (a local build; publish uses pypi-dist)
 	@uv build
+
+# The package index shows README.md, where the repo's RELATIVE links 404.
+# pypi-dist builds from the release TAG, never the checkout: `git archive` into
+# a scratch stage, pin the stage's README links to the tag (the checkout's
+# README is never touched), `uv build` there into dist/, then check BOTH the
+# wheel and the sdist for any relative link left. The links point at the PUBLIC
+# repo's tag, so the tag must be there first, and be the same commit: it
+# refuses unless the local tag and the tag on PUBLIC_REMOTE name the same
+# commit (the kit's `tag-check`, which names both), so a moved or stale local
+# tag never builds.
+#
+# The rewrite and the check are sessionkit's scripts/pypi_readme.py, one copy
+# for the whole kit, never a copy here. SESSIONKIT names a sessionkit clone
+# that has it (default: a clone beside this one); PYPI_README is the command
+# that runs it. Both are overridable: `make pypi-dist SESSIONKIT=/path/to/clone`.
+# Without the script it refuses; it never falls back to a plain build.
+PUBLIC_REMOTE ?= https://github.com/sessionkit/sessionview.git
+SESSIONKIT ?= ../sessionkit
+PYPI_README ?= python3 $(SESSIONKIT)/scripts/pypi_readme.py
+pypi-dist: SHELL := /bin/bash
+pypi-dist:  ## wheel + sdist from tag v<version>, README links pinned to it; the tag must be the same commit on PUBLIC_REMOTE; needs SESSIONKIT
+	@set -euo pipefail; \
+	$(PYPI_README) --help >/dev/null 2>&1 \
+	  || { echo "pypi-dist: cannot run sessionkit's scripts/pypi_readme.py ($(PYPI_README)); set SESSIONKIT to a sessionkit clone that has it, or PYPI_README to the command that runs it; nothing built" >&2; exit 1; }; \
+	v="v$$(uv version --short)"; [ "$$v" != v ] || { echo "pypi-dist: could not read the version from pyproject.toml (uv version --short); nothing built" >&2; exit 1; }; \
+	git rev-parse -q --verify "refs/tags/$$v" >/dev/null \
+	  || { echo "pypi-dist: tag $$v is not in this repository - run 'make release' first; nothing built" >&2; exit 1; }; \
+	$(PYPI_README) tag-check --tag "$$v" --remote "$(PUBLIC_REMOTE)" \
+	  || { echo "pypi-dist: the local tag $$v is not the public tag on $(PUBLIC_REMOTE); nothing built" >&2; exit 1; }; \
+	stage="$$(mktemp -d)"; trap 'rm -rf "$${stage:?}"' EXIT; \
+	git archive "$$v" | tar -x -C "$$stage"; \
+	$(PYPI_README) rewrite --repo sessionkit/sessionview --ref "$$v" --root "$$stage" "$$stage/README.md"; \
+	(cd "$$stage" && uv build --out-dir "$(CURDIR)/dist"); \
+	dist="dist/$$(echo 'sessionview' | tr '-' '_')-$${v#v}"; \
+	$(PYPI_README) check "$$dist"-*.whl "$$dist".tar.gz
 
 # release.py is stdlib-only, so python3 runs it: a plain `uv run` would re-lock
 # the project before the script starts.
@@ -74,7 +110,7 @@ push:  ## push the branch, then the ONE release tag refs/tags/vX.Y.Z by name (py
 # `pass show` (one touch), and what `ps` shows is `uv publish dist/...`.
 # The process list never includes the password. PYPI_TOKEN_PASS_PATH names the pass entry, e.g.
 # pypi/token; set it in your shell profile.
-publish: build  ## upload THIS version's wheel + sdist to PyPI; token via $$PYPI_TOKEN_PASS_PATH (pass) or $$UV_PUBLISH_TOKEN, never on a command line
+publish: pypi-dist  ## upload THIS version's wheel + sdist to PyPI; token via $$PYPI_TOKEN_PASS_PATH (pass) or $$UV_PUBLISH_TOKEN, never on a command line
 	@dist="dist/$$(echo 'sessionview' | tr '-' '_')-$$(uv version --short)"; \
 	if [ -n "$$UV_PUBLISH_TOKEN" ]; then uv publish "$$dist"*; \
 	elif [ -n "$$PYPI_TOKEN_PASS_PATH" ]; then UV_PUBLISH_TOKEN="$$(pass show "$$PYPI_TOKEN_PASS_PATH" | head -n1)" uv publish "$$dist"*; \

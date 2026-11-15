@@ -82,8 +82,8 @@ want() {
   fi
 }
 
-# Remember the answer in the home layer (`sessionview-config path`) through
-# `sessionview-config set`, the one writer: it writes this key and nothing
+# Remember the answer in the home layer (`sessionview config path`) through
+# `sessionview config set`, the one writer: it writes this key and nothing
 # else, via a temp file and a rename.
 remember() { "$CFG" set autostart_agent "$1"; }
 

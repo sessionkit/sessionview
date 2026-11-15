@@ -12,10 +12,10 @@ Each table below gives a key's type, its default and what it does.
   sessionview does while it is still there. A store's or a
   project's `.sessionview` may set keys too, later layers winning. The
   layers are on the [configuration page][configuration].
-- **Change one** with `sessionview-config set <key> <value>`, which writes
-  your copy only. `sessionview-config unset <key>` goes back to the
+- **Change one** with `sessionview config set <key> <value>`, which writes
+  your copy only. `sessionview config unset <key>` goes back to the
   default. A key not in the template is refused.
-- **See them** with `sessionview-config list`, or project menu → Settings
+- **See them** with `sessionview config list`, or project menu → Settings
   in the sidebar.
 - **Template or home only.** A key marked so is ignored in a store's or a
   project's `.sessionview`, because it runs something.
@@ -77,7 +77,7 @@ Each table below gives a key's type, its default and what it does.
 | `group_by` | string | `"none"` | Group agents: `none`, `repo`, `project` or `session`. |
 | `group_format` | string | `" {group}"` | A group's heading row. |
 | `sort` | list | `["rank", "idle_s"]` | The fields agents are sorted by, in order. |
-| `hide` | list | `[]` | Agent statuses to leave out. |
+| `hide` | list | `[]` | Agents to leave out, by the word the sidebar shows for them: `idle`, `busy`, `waiting` or `blocked`. A raw status such as `shell` still matches as before. Most seats drawn idle say `shell`, so write `idle` to leave them all out. |
 | `pinned_agents` | list | `[]` | Agent names held at the top, in this order, here and in the start-an-agent picker. |
 
 ## Remote hosts

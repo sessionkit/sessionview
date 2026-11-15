@@ -1,0 +1,18 @@
+#!/bin/sh
+# nvim-modified SOCK FILE - does FILE's buffer in that nvim hold unsaved
+# changes? Asked with no keys sent; FILE need not be the current buffer.
+# The answer is the exit code, and a word on stdout:
+#   0 modified   leave the file alone and tell the user
+#   1 clean      safe to edit on disk, then nvim-reload
+#   3 not-open   nvim has no buffer for FILE
+#   2            usage, or no nvim on SOCK
+# so `if nvim-modified SOCK FILE; then` reads "if the user has unsaved work".
+set -eu
+S="${1:-}"; F="${2:-}"
+if [ -z "$S" ] || [ -z "$F" ]; then echo "usage: nvim-modified SOCK FILE" >&2; exit 2; fi
+case "$F" in /*) ;; *) F="$(pwd)/$F";; esac
+FV="$(printf %s "$F" | sed "s/'/''/g")"
+R="$(nvim --server "$S" --remote-expr "{t -> empty(t) ? 'not-open' : t.changed ? 'modified' : 'clean'}(get(filter(getbufinfo(), {_, b -> resolve(b.name) ==# resolve('$FV')}), 0, {}))")"
+echo "$R"
+case "$R" in modified) exit 0;; clean) exit 1;; not-open) exit 3;; esac
+exit 2

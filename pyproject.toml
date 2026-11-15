@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionview"
-version = "0.3.3"
+version = "0.4.0"
 description = "A sidebar for tmux: your projects (sessions) and your agents, here and on remote hosts."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -23,14 +23,12 @@ dependencies = []
 Homepage = "https://github.com/sessionkit/sessionview"
 Repository = "https://github.com/sessionkit/sessionview"
 
-# One console script per public command; each runs its namesake under
-# sessionview/_data/bin (src/sessionview/__init__.py). The helpers the frame
-# and the tmux bindings call by path stay off PATH.
+# ONE console script: sessionview, which runs sessionview/_data/bin/sessionview
+# (src/sessionview/__init__.py). Every other tool is a subcommand of it
+# (`sessionview config`, `sessionview session`, ...) or a helper the frame and
+# the tmux bindings call by path; none is on PATH.
 [project.scripts]
 sessionview = "sessionview:main"
-sessionview-config = "sessionview:main"
-sessionview-session = "sessionview:main"
-sessionview-messages = "sessionview:main"
 
 [tool.hatch.build]
 exclude = ["**/__pycache__"]

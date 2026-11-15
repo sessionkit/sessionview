@@ -1,15 +1,32 @@
 #!/bin/sh
-# nvim-open SOCK FILE [+LINE] - open FILE in the nvim listening on SOCK.
-# (show-me does this and more - a file, a URL, the right pane; prefer it
-# when it is installed. This is the bare move.)
-# LINE goes to `:e +N FILE` (sending "+12" as keys moved down one line and
-# started a count - found in review). The path is a Vim string
-# through fnameescape(), so spaces survive; `<` cannot (remote-send reads
-# it as a key name) and is refused.
+# nvim-open SOCK FILE [+LINE] - show FILE in the nvim listening on SOCK, at
+# LINE if given. Prints "path:line" back. (show-me does this and more - a
+# file, a URL, the right pane; prefer it when it is installed.)
+#
+# No keys are sent: keys land in nvim's input between the user's own, and
+# mid-word they end insert mode and the rest of the word runs as commands.
+# One --remote-expr asks and acts, so nothing can change between the two:
+# it opens the file only when the user is in normal mode, the current buffer
+# has no unsaved changes and FILE's buffer (if open) has none either.
+# Otherwise it leaves the window alone, exits 1 and says why in one line.
+# Exit 2: usage, or no nvim on SOCK.
 set -eu
-S="${1:?socket}"; F="${2:?file}"; LN="${3:-}"; LN="${LN#+}"
+S="${1:-}"; F="${2:-}"; LN="${3:-}"; LN="${LN#+}"
+if [ -z "$S" ] || [ -z "$F" ]; then echo "usage: nvim-open SOCK FILE [+LINE]" >&2; exit 2; fi
+case "$LN" in *[!0-9]*) echo "nvim-open: LINE is a number: +12" >&2; exit 2;; esac
 case "$F" in /*) ;; *) F="$(pwd)/$F";; esac
-case "$F" in *'<'*) echo "nvim-open: '<' in a path is a key to remote-send; rename it" >&2; exit 2;; esac
 FV="$(printf %s "$F" | sed "s/'/''/g")"
-nvim --server "$S" --remote-send "<C-\\><C-n>:exe 'e ${LN:++$LN }' . fnameescape('$FV')<CR>"
-nvim --server "$S" --remote-expr 'expand("%:p") . ":" . line(".")'
+TARGET="get(filter(getbufinfo(), {_, b -> resolve(b.name) ==# resolve('$FV')}), 0, {})"
+OPEN="[execute('edit ${LN:++$LN }' . fnameescape('$FV')), 'ok ' . expand('%:p') . ':' . line('.')][1]"
+R="$(nvim --server "$S" --remote-expr "{m, c, t -> m !=# 'n' ? 'mode ' . m : c ? 'current' : (!empty(t) && t.changed) ? 'target' : $OPEN}(mode(1), &modified, $TARGET)")"
+case "$R" in
+  "ok "*) echo "${R#ok }"; exit 0;;
+  current) echo "nvim-open: the user's current buffer has unsaved changes; left alone - tell the user" >&2;;
+  target) echo "nvim-open: $F has unsaved changes in nvim; left alone - tell the user" >&2;;
+  "mode i"*) echo "nvim-open: the user is in insert mode; left alone" >&2;;
+  "mode R"*) echo "nvim-open: the user is in replace mode; left alone" >&2;;
+  "mode n"*) echo "nvim-open: the user is part-way through a command (mode ${R#mode }); left alone" >&2;;
+  "mode "*) echo "nvim-open: the user is not in normal mode (mode ${R#mode }); left alone" >&2;;
+  *) echo "nvim-open: unexpected answer from nvim: $R" >&2;;
+esac
+exit 1

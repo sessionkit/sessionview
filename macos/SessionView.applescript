@@ -176,7 +176,7 @@ end inShell
 -- reads the same three-layer config cascade as everything else in sessionview:
 -- `terminal` in the config, then a terminal running now, then iTerm, then
 -- Terminal. There is no one-word sidecar file (~/.config/sessionview/terminal):
--- a second config system would be invisible to `sessionview-config dump`.
+-- a second config system would be invisible to `sessionview config dump`.
 --
 -- Why this applet no longer decides: the old fallback order picked whatever
 -- was RUNNING, so a click worked while a terminal happened to be open and

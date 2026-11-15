@@ -53,7 +53,7 @@ CMD="$(cfg user_mail_command neomutt)"
 # The command: only its first word is checked on PATH; the rest is the user's.
 read -r FIRST REST <<<"$CMD"
 if [ -z "${FIRST:-}" ]; then
-  echo "$ME: user_mail_command is empty - the user mail row is off (sessionview-config set user_mail_command neomutt)" >&2
+  echo "$ME: user_mail_command is empty - the user mail row is off (sessionview config set user_mail_command neomutt)" >&2
   exit 2
 fi
 if ! command -v "$FIRST" >/dev/null 2>&1; then

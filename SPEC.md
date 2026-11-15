@@ -49,7 +49,7 @@ and its plugin contract are borrowed from herdr, a different tool.
   sessions (`tmux/frame.conf`, session-scoped, applied on attach and on
   every jump), or globally (`tmux/tabs-top.conf`). herdr's Mocha
   palette.
-- **Helpers** — `sessionview-session NAME` (a project session with its
+- **Helpers** — `sessionview session NAME` (a project session with its
   configured tabs), `sessionview-newtab` (the tab bar's `+`).
 
 ## 2. The view
@@ -102,7 +102,7 @@ defaults, not fixed. Rules:
     projects) it shows every seat for now;
   - project = the seats whose pane is in the selected project.
   A pinned seat (`pinned_agents`) shows under every scope; `hide` still
-  applies first, so a hidden status stays hidden. The sidebar starts in
+  applies first, so a hidden seat stays hidden. The sidebar starts in
   all.
 - The selected project row carries its menu as `⋯` at the right.
 - **Overflow**: the seats block starts at half height only when that
@@ -154,17 +154,47 @@ defaults, not fixed. Rules:
 - Click a remote row → a local session named after the host, with one
   window per remote session running `ssh -t host tmux attach` (the
   seat's window and pane are selected first); raised if it already
-  exists.
+  exists. The tab's pane carries the pane option
+  `@sessionview_remote_host` = the host, so the agent pane menu knows
+  the pane is an ssh attach and not the agent.
 - Click the store name → that store's own session and its store view
   (`store_windows` tabs). `⋯` (or `s`) → Switch store, a menu over the
   sidebar.
+- A click on a remote seat whose pane is in no session on its host (a
+  stale pane id, a pane on another tmux server there) is refused with a
+  note in the sidebar, as every refused action is; no tab opens and no
+  ssh runs.
+- A remote tab whose session has ended is flagged on the next clean
+  poll: renamed `NAME (ended)`, with the ended session in the window
+  option `@sessionview_remote_ended`. Remote hosts run
+  `detach-on-destroy off`, so that tab now shows another live session
+  under a name that is gone. It is flagged, not closed: the user may be
+  typing in it, and a flag can be undone. A tab is judged by the session
+  its own attach names, not by its name; a window that is not a remote
+  attach, and any failed or empty poll, change nothing.
 - **new** (`+`) → the picker: taskmaster projects plus the git repos
   under `project_dirs`, most recently opened first (`picker_order`;
-  recency from `recent.tsv` or the store project's mtime); typing
+  recency from `recent.tsv` or the store project's mtime, or its
+  `tasks/` directory's, whichever is newest); typing
   filters, up/down move, enter opens the highlighted row or the typed
   name; open sessions are marked and a click on one just jumps. The
   same picker opens a new tab and starts an agent.
-- **sessionview-session NAME [--repo DIR] [--plain] [--print]** builds
+  - Each project row carries its ready badge on the right, counted as
+    the project row's is, in the project's own repo. The counts run in
+    threads (four at a time) when the picker opens and land a refresh
+    later; a repo found is kept for the process, a count for 30 s.
+  - `^g` shows only the projects with eggs, or whose count is `?`; a
+    project still being counted stays out, and the hint line says how
+    many are left. `^g` again shows them all.
+  - Space marks the highlighted project and moves down; `^a` marks
+    every row the filter shows, and again unmarks them. Marks survive a
+    filter change. With marks, enter opens every marked project: the
+    first as a single pick does, the view landing there; the rest in a
+    thread, three at a time, while `opening N/M` shows above the
+    projects. One that fails is named in a note. In a popup they all
+    open before the jump. The new-tab and agent pickers have no marks:
+    space is typed there.
+- **sessionview session NAME [--repo DIR] [--plain] [--print]** builds
   the session from the `windows` list in config. Shipped tabs: `project`
   (the store project dir, the editor on PROJECT.md), `tasks`, `messages`
   (the project's mail, read-only, in neomutt; only when its mailbox
@@ -183,6 +213,33 @@ defaults, not fixed. Rules:
   no url (no taskmaster, or no such project), a `~/Code/*/*/NAME` glob,
   else a repo found under `project_dirs`, else none. `--plain` / `SESSIONVIEW_PROFILE=0` = one
   shell.
+- **sessionview show FILE** moves the frame's client to where FILE
+  belongs. Where: a Neovim that already has FILE open, else the project
+  whose PROJECT.md `git_url` is the repo's raw `origin` (its store's
+  server, the project's session, the window named `editor`, the Neovim in
+  it; with two, the one with the file, else pane 0). A file in no repo
+  belongs to main on the default server, where no window is ruled yet.
+  Which client: the main pane (`@sessionview_main_pane`) of the frame
+  whose terminal was used most recently, never another. What it sends,
+  only where the place differs: the target's `select-window`, another
+  pane's zoom undone (`resize-pane -Z`), `select-pane`; then the client:
+  another server is `detach-client -E` re-attached there, another
+  session is `switch-client`; then the sessionview look; then `nvim
+  --server SOCK --remote FILE`, which is `:drop`. A missing session or
+  `editor` window is made first by `sessionview session` (on the
+  project's `--socket` and `--store`) and named first in the result. The
+  moved client shows `shown: FILE · asked by NAME` for 2 s. Every ask
+  and send is bounded; a dead socket is skipped. Read-only:
+  `--current`, `--target FILE`, `--dry-run`. `--porcelain` is one
+  tab-separated line for a shell caller: result, server, session, window
+  id, pane id, the Neovim's socket. Exit 0 shown or already
+  there, 1 a step failed, 2 usage, 3 not ours (no frame, or no window
+  ruled for FILE): nothing moved, and a caller falls back to its own way.
+  Known limit: `select-window` and `select-pane` act on the SESSION, so
+  another client attached to the target session (another terminal, a
+  tablet) sees the same window change; only grouped sessions avoid it.
+  No frame on screen (every frame detached) is "not ours" too: moving a
+  client nobody sees changes no screen.
 - **Tab bar**: click selects; drag reorders (`MouseDrag1Status
   swap-window -d -t=`); `+` opens the new-tab picker; a dim `×` closes
   the tab. The `×` is on by default; `@sessionview_tab_close 0` turns
@@ -208,7 +265,10 @@ defaults, not fixed. Rules:
   pane that runs your tmux the click goes through (`send-keys -M`) to
   your tmux and its agent menu; any other frame pane keeps that server's
   binding (tmux's stock menu). Without the frame, one `source-file -q`
-  line in `~/.tmux.conf`.
+  line in `~/.tmux.conf`. Its Kill is tmux's `kill-pane`, except on a
+  remote tab (a pane marked `@sessionview_remote_host`): there it kills
+  nothing and says on the bar that the agent runs on that host, because
+  `kill-pane` would kill only the local ssh client.
 
 ## 4. Contract with the tools it calls
 
@@ -305,7 +365,7 @@ reported on stderr and skipped.
 2. `~/.sessionkit/view/settings/view.json`: yours, made from the template
    on first read. If it is absent and an older install's file is present
    (see Upgrading in docs/configuration.md), nothing is made or read:
-   `sessionview-config` exits 3 and names both paths and the move. If both
+   `sessionview config` exits 3 and names both paths and the move. If both
    are present, the new one is used and a warning names the old one, which
    a walk-up under the home dir would read as an untrusted layer.
 3. `STORE/.sessionview`.
@@ -313,7 +373,11 @@ reported on stderr and skipped.
 
 A store's or a project's `.sessionview` may reorder tabs and add plain
 ones, but never sets a `command`: commands come only from the template
-and your home file. Keys are described in `config/README.md`. One TAB
+and your home file. An older home file is a copy of the template of its
+day, so its `messages` tabs may name the messages tool by its old name,
+which is not on PATH: the cascade reads those exact shipped commands as
+`sessionview messages ...` and leaves the file as it is. Keys are
+described in `config/README.md`. One TAB
 in a format = "right-align the rest". Rows and layout live in config,
 and so do two colours (`selected_fg`, `popup_bg`) and the idle
 thresholds (`agent_idle_orange`, `agent_idle_blink`, `agent_idle_red`,
@@ -325,6 +389,10 @@ the tab bar's in the tmux confs).
 
 - A remote seat has no cross-host mail address yet, so Message and
   Speak are greyed for `@host` rows.
+- Kill on a remote tab refuses rather than killing the agent on its
+  host: the tab knows the host and remote session, not which tmux
+  server there holds the agent, so a kill from here could hit the
+  wrong pane.
 - A remote seat's voice and tm are read from local `ps` argv; over ssh
   they are unknown, so Speak is greyed. `session list --json` could
   carry them.

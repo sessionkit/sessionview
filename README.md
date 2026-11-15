@@ -56,7 +56,8 @@ Grouped by component, named in the terms a comparison matrix would use.
 
 - *Overflow menu* — three dots `⋯` at the right of the selected session
   open its menu (rename, new tab, config, settings, start an agent,
-  close). Right-click opens the same menu on any row.
+  close). Right-click opens a row's menu on any row: a project's is this
+  one, an agent's is the [agent menu](#agent-menu).
 - *Light dismiss* — a click outside an open menu closes it, and so does
   a click into the main pane (focus leaves the sidebar).
 - *Keyboard* — ↑↓ / j k move, the letter or enter picks, esc closes.
@@ -85,6 +86,38 @@ agents, or the menu): the names `session start` knows, pinned ones first.
   list it asks `Which agent? (a name, or "no" to never ask again)`. `n` or
   `no` means never; `autostart_agent` in Settings changes it later.
 
+### Agent menu
+
+A menu on one agent: send it a word, or act on its pane. There are two,
+in two places.
+
+- *In the sidebar* — right-click an agent's row, or the `⋯` on the
+  selected agent row. The sidebar draws it, and it is always there:
+  no setting. *Copy name*, *Jump to* (greyed when the agent has no pane
+  to go to) and *Keys*; then the agent verbs from the plugins:
+  *Message* (asks for the text), *Continue*, *Settle*, *Stand down* and
+  *Succeed* (the last two ask first). With voicemode installed, *Speak*
+  comes last; it is greyed for an agent that runs without voice. Each of
+  these verbs mails that agent.
+
+  ![The sidebar's agent menu, open on the agent worker.demo: Copy name, Jump to, Keys, then Message, Continue, Settle, Stand down and Succeed](docs/images/sidebar-agent-menu.png)
+
+- *On the agent's own pane* (opt-in) — right-click, or Option +
+  right-click, the pane an agent runs in. tmux draws it. *Speak*,
+  *Continue*, *Read Clipboard*, *Park* and *Succeed*, each followed by the
+  agent's name and each a mail to it, sit on top of tmux's own pane menu
+  (splits, swap, *Kill*, *Respawn*, *Mark*, *Zoom*). It opens even when the
+  program in the pane uses the mouse, as Claude Code does. *Kill* on a
+  remote tab kills nothing and says on the bar which host the agent runs
+  on. Turn it on with `sessionview-config set pane_menu true`; it is off by
+  default because it replaces your own tmux right-click bindings. Details
+  in [Keys and clicks](#keys-and-clicks).
+
+  ![The agent pane menu, open over Claude Code on the agent worker.demo: Speak, Continue, Read Clipboard, Park and Succeed above the tmux pane menu with Kill](docs/images/agent-pane-menu.png)
+
+Which right-click reaches which menu, and when you need Option: [Right-click
+and Option](#right-click-and-option).
+
 **Settings** — every setting, its default, its note and where its value
 comes from, in a small screen (project menu → Settings); the rows come
 from the template, so a new key needs no second edit.
@@ -103,6 +136,45 @@ Tested: Terminal.app, iTerm2, Ghostty (macOS). The sidebar needs mouse
 reporting and focus reporting from the terminal; anything that gives
 tmux those should work, but only the three above have been driven by
 hand. Blink Shell on iPad is wanted and not yet connecting.
+
+### Right-click and Option
+
+A right-click passes two places before a menu opens: your terminal, then
+tmux.
+
+1. **The terminal** has to report the click to tmux. That is mouse
+   reporting, which sessionview needs on. In Terminal.app it is
+   View > Allow Mouse Reporting, and Apple's guide says each new window
+   has it on. If your terminal shows its own context menu, the click
+   stopped there and tmux never saw it. Some terminals turn mouse
+   reporting off while a modifier key is held. iTerm2's documentation
+   says Option does this, so in iTerm2 an Option + right-click may open
+   iTerm2's menu instead of reaching tmux. How each terminal above handles
+   a plain right-click and an Option + right-click has not been measured
+   yet.
+2. **tmux** decides what a click that reached it does. Over a program
+   that uses the mouse, as Claude Code does, tmux hands a plain
+   right-click to the program and keeps Option + right-click for its own
+   menu. sessionview changes that only for agents:
+
+   | you right-click | plain right-click | Option + right-click |
+   | --- | --- | --- |
+   | an agent's row in the sidebar | the sidebar's agent menu | the frame's own tmux menu, no agent items |
+   | an agent's pane, `pane_menu` on | the agent pane menu | the agent pane menu |
+   | another pane, its program uses the mouse | goes to the program | tmux's pane menu, no agent items |
+   | another pane, its program does not | tmux's pane menu | tmux's pane menu |
+
+   With `pane_menu` off, every pane keeps tmux's own right-clicks, and the
+   agent menu is in the sidebar only. In session view, an Option +
+   right-click on a pane then opens the frame's own tmux menu, for the
+   frame pane that holds your tmux, and your tmux never sees the click:
+   the frame passes it through to yours only with `pane_menu` on.
+
+So Option + right-click is what you need for your tmux's own menu over a
+program that uses the mouse, such as Claude Code in a pane that is not an
+agent's; in session view that takes `pane_menu` on. For an agent, a plain
+right-click is enough: on its sidebar row always, and on its pane with
+`pane_menu` on.
 
 ## Layout
 
@@ -136,9 +208,9 @@ From PyPI:
     uv tool install sessionview
     sessionview install
 
-That puts `sessionview`, `sessionview-config`, `sessionview-session` and
-`sessionview-messages` on PATH; `sessionview install` then checks every
-requirement and links nothing.
+That puts one command, `sessionview`, on PATH; every other tool is a verb
+of it, such as `sessionview config`. `sessionview install` then checks
+every requirement and links nothing.
 
 From a checkout:
 
@@ -183,7 +255,7 @@ window is busy, so the app opens its own and you get two.
 
 Full screen on click is off by default; turn it on with
 
-    sessionview-config set fullscreen true
+    sessionview config set fullscreen true
 
 On Terminal.app that needs Accessibility permission for SessionView
 (System Settings > Privacy & Security > Accessibility) -- the app asks
@@ -203,14 +275,15 @@ cache, and it touches no shell startup file and nothing in `~/.claude`.
 nothing. Everything else below appears only when you run the verb named
 beside it. Each line says what puts it there and what takes it away.
 
-- **PATH:** `~/.local/bin/sessionview`, `sessionview-config`,
-  `sessionview-session` and `sessionview-messages`, or in
-  `UV_TOOL_BIN_DIR` when that is set. uv says so if the folder is not on
-  your PATH, and edits no shell file. `uv tool uninstall` removes them.
+- **PATH:** `~/.local/bin/sessionview`, or in `UV_TOOL_BIN_DIR` when
+  that is set. uv says so if the folder is not on your PATH, and edits no
+  shell file. `uv tool uninstall` removes it.
   From a checkout instead, `bin/sessionview-install` (or `make install`)
   links the checkout's `bin/sessionview*` tools and `tmux-sidebar` into
   `~/.local/bin`, or into `PREFIX/bin` when `PREFIX` is set, and makes
-  nothing else. [Uninstall](#uninstall) has the line that deletes them.
+  nothing else. It links no config, session or messages tool: you type
+  those as `sessionview config`, `sessionview session` and
+  `sessionview messages`. [Uninstall](#uninstall) has the line that deletes them.
 - **The program:** `~/.local/share/uv/tools/sessionview/`, its own
   Python environment, or in `UV_TOOL_DIR`. sessionview has no Python
   dependencies: the environment holds sessionview and the files it ships
@@ -286,8 +359,8 @@ beside it. Each line says what puts it there and what takes it away.
 - **Settings:** the install writes none.
   `~/.sessionkit/view/settings/view.json` is made from the shipped
   template the first time anything reads your settings: `sessionview`,
-  or a `sessionview-config` verb such as `get` (`path` only prints it).
-  `sessionview-config set` writes it. `SESSIONVIEW_CONFIG` names another
+  or a `sessionview config` verb such as `get` (`path` only prints it).
+  `sessionview config set` writes it. `SESSIONVIEW_CONFIG` names another
   file instead. `~/.sessionkit/view/settings/neomuttrc` is there only if
   you write it.
 - **Your tmux server, while it runs:** a frame binds keys on the tmux
@@ -353,9 +426,12 @@ keep theirs beside it in `~/.sessionkit/`.
 
 ## Keys and clicks
 
-- sidebar: click a project or seat → go there; right-click, or the `⋯`
-  on the selected project → its menu; `+` between the lists → a session
-  picker (type to filter, ↑↓, enter); `+` at the bottom → start an
+- sidebar: click a project or seat → go there; right-click a project or
+  seat, or the `⋯` on the selected row → its menu (a seat's is the
+  [agent menu](#agent-menu)); `+` between the lists → a session
+  picker (type to filter, ↑↓, enter; each project shows its eggs, `^g`
+  shows only the ones with eggs, space or `^a` marks rows and enter opens
+  every marked one); `+` at the bottom → start an
   agent; the store name → that store's session and store view, its `⋯`
   (or `s`) → Switch store, right-click → Kick; `all · grouped` on the agents
   heading are toggles (the first cycles all / store / project); drag the border to resize; `q` reloads, `Q`
@@ -369,8 +445,9 @@ keep theirs beside it in `~/.sessionkit/`.
   pane for Speak, Continue, Read Clipboard, Park or Succeed; each mails
   that agent. It opens even on an agent whose program uses the mouse, as
   Claude Code does. An agent's pane is one whose title is
-  `<glyph> <address>`. Turn it on with
-  `sessionview-config set pane_menu true`. It replaces your own tmux
+  `<glyph> <address>`. On a remote tab Kill kills nothing and says on
+  the bar which host the agent runs on. Turn it on with
+  `sessionview config set pane_menu true`. It replaces your own tmux
   right-click menus, which is why it is off by default. Using tmux without session view? Add
   `source-file -q /path/to/sessionview/tmux/agent-menu.conf` to
   `~/.tmux.conf` and reload.
@@ -383,11 +460,11 @@ The look follows herdr's; its colours were matched from herdr's own window.
   `config/config.json` holds every key and its default.
   `~/.sessionkit/view/settings/view.json` is yours, made from it on first
   use; a store's and a project's `.sessionview` come after it.
-  `sessionview-config set KEY VALUE` writes yours, and
-  `sessionview-config dump --where` names the file behind each key.
+  `sessionview config set KEY VALUE` writes yours, and
+  `sessionview config dump --where` names the file behind each key.
   An older install's settings are never read. Moving them is one step,
   in [Upgrading from 0.1.0](docs/configuration.md#upgrading-from-010).
-  Until then sessionview makes nothing and refuses: `sessionview-config`
+  Until then sessionview makes nothing and refuses: `sessionview config`
   exits 3 and prints the move to run, and the sidebar shows the same
   message. If the old file is left beside the new one, it uses the new one
   and warns you to remove the old one.

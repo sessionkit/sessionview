@@ -18,14 +18,14 @@ Several agents in one seat? See the sessionkit skill's card, "Several agents in 
 ## Commands (`bin/`)
 
 - `sessionview` — open the frame (sidebar + your session) in this terminal.
-- `sessionview-session NAME` — open a project as a tmux session, its tabs
+- `sessionview session NAME` — open a project as a tmux session, its tabs
   from config's `windows` list (`references/tabs.md`); an existing one is kept.
-- `sessionview-config get KEY [--project DIR] [--where]` / `dump` / `path` — the
+- `sessionview config get KEY [--project DIR] [--where]` / `dump` / `path` — the
   config. JSON everywhere, no hidden defaults: `config/config.json` is the
   template; `~/.sessionkit/view/settings/view.json` is made from it on first
   read; `STORE/.sessionview` and a project's `.sessionview` layer on top.
   An older install's file is never read (see Upgrading in
-  docs/configuration.md): alone, it makes `sessionview-config` refuse
+  docs/configuration.md): alone, it makes `sessionview config` refuse
   (exit 3, the move to run, on stderr and in the sidebar); beside the new
   file, it gets a warning to remove it.
 - `session start`, `session list` — from sessiontools
@@ -39,7 +39,8 @@ Several agents in one seat? See the sessionkit skill's card, "Several agents in 
 
 - Top: the store row: its name opens that store's session and store view;
   its `⋯` (or `s`) opens Switch store; right-click it to Kick the GC. Projects, one row each; click
-  opens it. `new` opens the picker (type to filter, Enter opens).
+  opens it. `new` opens the picker (type to filter, Enter opens; `^g`
+  only projects with eggs; space or `^a` marks, Enter opens the marked).
 - `menu` or right-click a project: Rename, New tab, Close, Config (opens
   the config in `$EDITOR`), and plugin actions - **Start an agent** (`a`,
   Enter = a plain claude; `agent_command` in config says what runs).

@@ -33,15 +33,15 @@ echo "sessionview: needs Python 3.11 or newer and found none on PATH (macOS ship
 echo "  brew install python@3.14   or   uv python install 3.14" >&2
 exit 1
 ':'''
-__doc__ = """sessionview-config - the ONE config cascade, JSON everywhere.
+__doc__ = """sessionview config - the ONE config cascade, JSON everywhere.
 
-  sessionview-config                    the settings screen (needs a terminal)
-  sessionview-config list               every setting as text: key, value, source
-  sessionview-config dump [--project DIR] [--store DIR] [--where]   merged config
-  sessionview-config get KEY [--project DIR] [--store DIR] [--where] [--json]
-  sessionview-config set KEY VALUE [--json] [--force]  write the HOME layer
-  sessionview-config unset KEY                         drop it, back to default
-  sessionview-config windows [--key K] [--project DIR] [--store DIR]  the `windows` list
+  sessionview config                    the settings screen (needs a terminal)
+  sessionview config list               every setting as text: key, value, source
+  sessionview config dump [--project DIR] [--store DIR] [--where]   merged config
+  sessionview config get KEY [--project DIR] [--store DIR] [--where] [--json]
+  sessionview config set KEY VALUE [--json] [--force]  write the HOME layer
+  sessionview config unset KEY                         drop it, back to default
+  sessionview config windows [--key K] [--project DIR] [--store DIR]  the `windows` list
                                       (or the list at key K: `store_windows`, the store
                                       view's tabs) as TSV,
                                       sorted by position: position name when cwd
@@ -49,8 +49,8 @@ __doc__ = """sessionview-config - the ONE config cascade, JSON everywhere.
                                       auto `-` = unset, console true|false, default
                                       false - the LAST column; a shell reads it
                                       with IFS=tab, so no field is ever empty)
-  sessionview-config init                                            make the home file
-  sessionview-config path                                            the home file
+  sessionview config init                                            make the home file
+  sessionview config path                                            the home file
 
 Layers, each a JSON object, later wins. JSON everywhere, because people
 already know it from Claude Code; no hidden defaults, because the home file
@@ -90,7 +90,7 @@ TEMPLATE = os.path.join(SESSIONVIEW_ROOT, "config", "config.json")
 # THE home settings dir, the one definition in Python: a folder per package
 # under the kit's home, `view` for sessionview. view.json is the home file,
 # and neomuttrc (bin/sessionview-messages) sits beside it. Every other Python
-# caller asks `sessionview-config path`; none re-spells it.
+# caller asks `sessionview config path`; none re-spells it.
 SETTINGS_DIR = "~/.sessionkit/view/settings"
 HOME_FILE = os.path.join(SETTINGS_DIR, "view.json")
 # The OLD home file. Read by nothing here: init() only checks that it EXISTS,
@@ -163,10 +163,12 @@ def load(p):
     except FileNotFoundError:
         return {}
     except Exception as e:
-        print(f"sessionview-config: {p}: {e} (skipped)", file=sys.stderr)
+        # the path may be a cloned repo's directory name, so it is printed
+        # through printable(); so is the error, which may quote it
+        print(f"sessionview-config: {printable(p)}: {printable(e)} (skipped)", file=sys.stderr)
         return {}
     if not isinstance(d, dict):
-        print(f"sessionview-config: {p}: not a JSON object (skipped)", file=sys.stderr)
+        print(f"sessionview-config: {printable(p)}: not a JSON object (skipped)", file=sys.stderr)
         return {}
     return {k: v for k, v in d.items() if not k.startswith("_")}
 
@@ -227,15 +229,26 @@ def commands(rows):
     return {str(w.get("name", "")).strip(): w["command"] for w in rows
             if isinstance(w, dict) and w.get("command")} if isinstance(rows, list) else {}
 
+ZWJ = "\u200d"                       # ZERO WIDTH JOINER
+
 def printable(v):
-    """V as text that is safe to print: every control character dropped (C0,
-    DEL and C1, Unicode category Cc). THE one place an untrusted value is made
-    printable. A layer past TRUSTED may be a cloned repo's, and a window name
-    holding ESC (0x1b) would restyle the terminal it is printed to: in the
-    untrusted() notice, and in the `windows` rows that sessionview-session
-    prints in its --print plan and the picker shows. A tab or line break is
+    """V as text that is safe to print. Dropped: every control character (C0,
+    DEL and C1, Unicode category Cc), every format character (category Cf:
+    the bidi embeddings, overrides, isolates and marks, the byte order mark,
+    the tag characters) and the line and paragraph separators U+2028 and
+    U+2029 (categories Zl and Zp). Kept: the ZERO WIDTH JOINER (U+200D), the
+    one format character a name may need, since it joins the glyphs of an
+    emoji sequence; it cannot reorder text or break a line. THE one place an
+    untrusted value is made printable. A layer past TRUSTED may be a cloned
+    repo's: a window name holding ESC (0x1b) would restyle the terminal it is
+    printed to, a bidi override would reorder the rest of its line, and a
+    separator may break it. It is printed in the untrusted() notice, and in
+    the `windows` rows that sessionview-session prints in its --print plan
+    and the picker shows. The rows are merged from every layer, so their
+    origin is unknown here and one rule serves all. A tab or line break is
     the caller's to turn into a space first, where it splits a cell."""
-    return "".join(c for c in str(v) if unicodedata.category(c) != "Cc")
+    return "".join(c for c in str(v)
+                   if c == ZWJ or unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp"))
 
 def untrusted(d, f, trusted):
     """D (layer file F) without its executing keys. An entry of an executing
@@ -272,12 +285,40 @@ def untrusted(d, f, trusted):
         out[k] = rows
     return out
 
+# The `messages` tab's command as the template shipped it before the messages
+# tool left PATH. The home file is made as a whole copy of the template, so an
+# older install's home file still holds one of these, and its `windows` list
+# replaces the template's whole: the tab would type a command that is no longer
+# on PATH. Read from the home layer, each is the same command through the front
+# door. Only these exact strings, the template's own words; a command the user
+# wrote is theirs and is read as written. The file itself is never rewritten.
+MOVED_COMMANDS = {old: "sessionview messages" + old[len("sessionview-messages"):]
+                  for old in ("sessionview-messages {project} --store {store}",
+                              "sessionview-messages {project}",
+                              "sessionview-messages {store}")}
+
+def moved(d):
+    """D (the home layer) with each shipped command that names the messages
+    tool by its old name read as `sessionview messages ...`."""
+    out = dict(d)
+    for k in EXEC_LISTS:
+        rows = out.get(k)
+        if not isinstance(rows, list):
+            continue
+        out[k] = [dict(w, command=MOVED_COMMANDS[w["command"]])
+                  if isinstance(w, dict) and isinstance(w.get("command"), str)
+                  and w["command"] in MOVED_COMMANDS else w for w in rows]
+    return out
+
 def merged(project=None, store=None):
     """(config, {key: the file that set it}). A layer past TRUSTED goes
-    through untrusted() first, so `where` never names it for a dropped key."""
+    through untrusted() first, so `where` never names it for a dropped key.
+    The home layer goes through moved()."""
     cfg, where, trusted = {}, {}, None
     for i, f in enumerate(layers(project, store)):
         d = load(f)
+        if i == TRUSTED - 1:
+            d = moved(d)
         if i >= TRUSTED:
             if trusted is None:
                 trusted = {k: commands(cfg.get(k)) for k in EXEC_LISTS}
@@ -389,7 +430,9 @@ def main(argv):
             if isinstance(w, dict) and "name" in w and not isinstance(w["name"], str):
                 print(f"sessionview-config: {key}[{i}]: name {json.dumps(w['name'])} is not a string (skipped)",
                       file=sys.stderr); continue
-            if not isinstance(w, dict) or not printable(w.get("name", "")).strip():
+            # a name of nothing but dropped characters, spaces and joiners
+            # shows nothing, so it is no name
+            if not isinstance(w, dict) or not printable(w.get("name", "")).replace(ZWJ, "").strip():
                 print(f"sessionview-config: {key}[{i}]: needs a name (skipped)", file=sys.stderr); continue
             try:
                 pos = int(w.get("position", 1000))

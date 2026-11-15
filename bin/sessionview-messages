@@ -1,7 +1,7 @@
 #!/bin/bash
-# sessionview-messages — the `messages` tab: a project's mail, read-only, in NeoMutt.
+# sessionview messages — the `messages` tab: a project's mail, read-only, in NeoMutt.
 #
-#   sessionview-messages PROJECT [--store SLUG] [--print]
+#   sessionview messages PROJECT [--store SLUG] [--print]
 #
 # (end of usage)
 # A project session comes up with a messages tab by default; the tab is

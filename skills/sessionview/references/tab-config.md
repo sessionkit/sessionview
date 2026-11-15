@@ -2,7 +2,7 @@
 
 One list builds a new session's tabs and fills the new-tab picker
 (project menu > New tab, or the tab bar's `+`). Print it, pins applied:
-`sessionview-config windows`.
+`sessionview config windows`.
 
 ## An entry
 
@@ -20,8 +20,8 @@ One list builds a new session's tabs and fills the new-tab picker
 ## The store view: `store_windows`
 
 The same fields, its own list, for the store row's session
-(`sessionview-session NAME --store-view STORE`). Print it with
-`sessionview-config windows --key store_windows`. Its own names:
+(`sessionview session NAME --store-view STORE`). Print it with
+`sessionview config windows --key store_windows`. Its own names:
 `when` `has_store_project`, `has_slipbox`, `has_scripts`,
 `has_store_mail`; `cwd` `store`, `slipbox`, `scripts` (and `projdir`, the
 store project); `{store}` and `{store_project}`. `config/README.md` has
@@ -45,6 +45,6 @@ sets `window_pins`, the pin is refused with that file's path.
 4. `.sessionview` walked up from the project's root, nearest wins.
 
 A layer replaces a key whole, so a project that sets `windows` replaces
-the entire list. `sessionview-config get windows --where` names the file.
+the entire list. `sessionview config get windows --where` names the file.
 Layers 3 and 4 never say what a tab runs: their `command` is ignored and
 the same name's command from layers 1-2 is used, else a plain shell.

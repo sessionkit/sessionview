@@ -5,7 +5,7 @@ A project session used to look its mail up by the bare project NAME, which
 resolves through the host-global postfix map: a second store's `store` session opened
 the first store's `store` box. Now the session's store identity (the `tm store list`
 record whose realpath is --store's: `store` field, else `name`) qualifies both
-the has_mail predicate and the typed command, `sessionview-messages NAME
+the has_mail predicate and the typed command, `sessionview messages NAME
 --store STOREID`. The rca's four cases (findings/rca.md, "Tests for fix-001"),
 plus the no-identity rule the foreman chose (no registry = bare name; a
 registry without this store = no tab).
@@ -20,7 +20,9 @@ import unittest
 
 from tests import support
 
-CMD = "sessionview-messages"
+# The command the tab types: the front door's subcommand, never the helper by
+# its own name (it is not on PATH).
+CMD = "sessionview messages"
 
 
 class ProjectMailBase(unittest.TestCase):
@@ -100,8 +102,8 @@ class SharedNameTwoStores(ProjectMailBase):
     def test_the_typed_command_opens_that_stores_folder(self):
         """End to end: the command the tab would type resolves fx-legacy's box."""
         cmd = shlex.split(self.listed("store", "fx-legacy")["messages"])
-        self.assertEqual(cmd[0], CMD)
-        r = support.run(CMD, *cmd[1:], "--print", env=self.env)
+        self.assertEqual(cmd[:2], CMD.split())
+        r = support.run("sessionview", *cmd[1:], "--print", env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
         want = self.data["boxes"]["fx-legacy/store"]
         self.assertIn(f"box=fx-legacy/store folder={want} ", r.stdout)
@@ -199,7 +201,8 @@ class NoIdentity(ProjectMailBase):
         self.assertEqual(got.get("messages"), f"{CMD} alpha --store ''")
         # and that command still resolves the bare box
         cmd = shlex.split(got["messages"])
-        r = support.run(CMD, *cmd[1:], "--print", env=self.env)
+        self.assertEqual(cmd[:2], CMD.split())
+        r = support.run("sessionview", *cmd[1:], "--print", env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("box=alpha ", r.stdout)
 

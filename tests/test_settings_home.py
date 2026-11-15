@@ -419,7 +419,7 @@ class UpgradingDoc(HomeBase):
                 f.write(body)
         move = upgrading_move()
         lines = move.rstrip("\n").split("\n")
-        self.assertEqual(lines[-1], "sessionview-config get width --where", move)
+        self.assertEqual(lines[-1], "sessionview config get width --where", move)
         env = dict(self.env, HOME=home)
         s = subprocess.run(["/bin/sh", "-c", "\n".join(lines[:-1])], env=env,
                            capture_output=True, text=True)
@@ -427,7 +427,8 @@ class UpgradingDoc(HomeBase):
         self.assertEqual(os.listdir(old_dir), ["notes.txt"])
         for name in ("view.json", backup, "neomuttrc"):
             self.assertTrue(os.path.isfile(os.path.join(new_home(home), name)), name)
-        r = support.run("sessionview-config", "get", "width", "--where", env=env)
+        # The check as the doc types it: the front door's verb.
+        r = support.run("sessionview", *lines[-1].split()[1:], env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.rstrip("\n").split("\t"),
                          ["64", os.path.join(new_home(home), "view.json")])

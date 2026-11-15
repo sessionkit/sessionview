@@ -369,6 +369,7 @@ C_SEL     = fg("#ced7f2")   # the selected row's name
 C_BRANCH  = fg("#c9a9f4")   # the selected row's second line (lavender)
 C_DIM     = fg("#6c7185")   # headings, branch, new/menu, chevron
 C_DIMMER  = fg("#474b59")   # an agent's second line
+C_MARK    = fg("#a6e3a1")   # a marked picker row's tick: the idle glyph's green
 RESET     = "\033[0m"
 # "Back to the default text" INSIDE the sidebar is the sidebar's own resting
 # colour, never the TERMINAL's default fg (\033[39m): that is white in a
@@ -500,6 +501,13 @@ def seat_word(a):
     if state:
         return STATE_WORD.get(state, state)
     return STATUS_WORD.get(status, status)
+
+def seat_hidden(a, hide):
+    """True when HIDE, the user's `hide` list, names seat A: by its word, as
+    the sidebar draws it (idle, busy, waiting, blocked), or by its raw status,
+    so a list written before the words (`shell`) hides exactly what it hid.
+    Local and remote rows both ask this, so they cannot disagree."""
+    return seat_word(a) in hide or a.get("status") in hide
 
 MOUSE_RE = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([mM])")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -866,25 +874,45 @@ def project_repo(name):
             return hit[1] if hit else ""
         _REPO_ASK.add(key)
     def work():
-        r, keep = "", True
         try:
-            cmd = session_cmd(name, "--print")
-            keep = repo_key(name) == key
-            if keep:
-                p = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                m = re.search(r"(?:^|\s)repo=(\S+)", p.stdout + "\n" + p.stderr)
-                r = m.group(1) if m and os.path.isdir(m.group(1)) else ""
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        with _REPO_LOCK:
-            if keep:
-                _REPO[key] = (time.time(), r)
-            _REPO_ASK.discard(key)
+            resolve_repo(name, key)
+        finally:
+            with _REPO_LOCK:
+                _REPO_ASK.discard(key)
     if ONESHOT:                 # --once must be complete, as it is for remotes
         work()
         return _REPO.get(key, (0, ""))[1]
     threading.Thread(target=work, daemon=True).start()
     return hit[1] if hit else ""
+
+def resolve_repo(name, key):
+    """One `sessionview-session --print` for NAME: the repo it names, kept in
+    _REPO unless the viewed store moved away from KEY's while the command was
+    built. Blocks for the command; call it off the render loop."""
+    r, keep = "", True
+    try:
+        cmd = session_cmd(name, "--print")
+        keep = repo_key(name) == key
+        if keep:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            m = re.search(r"(?:^|\s)repo=(\S+)", p.stdout + "\n" + p.stderr)
+            r = m.group(1) if m and os.path.isdir(m.group(1)) else ""
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if keep:
+        with _REPO_LOCK:
+            _REPO[key] = (time.time(), r)
+    return r
+
+def project_repo_now(name):
+    """project_repo() for a caller that is already off the render loop (the
+    picker's egg count): the cached repo, or resolved here and now."""
+    key = repo_key(name)
+    with _REPO_LOCK:
+        hit = _REPO.get(key)
+        if hit and (hit[1] or time.time() - hit[0] < 600):
+            return hit[1]
+    return resolve_repo(name, key)
 
 def project_ready(name, fallback_path, fallback_default):
     """ready_where() on the project's own repo, else on the active tab's."""
@@ -892,6 +920,48 @@ def project_ready(name, fallback_path, fallback_default):
     if repo:
         return ready_where(repo, default_branch(repo))
     return ready_where(fallback_path, fallback_default)
+
+_EGGS = {}                  # repo_key(name) -> (counted at, (field, n))
+_EGGS_ASK = set()           # repo_keys a counter is on
+_EGGS_POOL = threading.BoundedSemaphore(4)
+def project_eggs(name):
+    """(field, n) for a picker row: the ready tags waiting in NAME's own repo,
+    counted the way the project row's badge counts them (ready_where), or
+    None while the count is still running. The picker lists every project
+    in the store, most with no session, so nothing here runs on the render
+    loop: a thread resolves the repo and counts, at most four at a time, and
+    the row's count appears a refresh later. Kept 30s, as ready_where keeps
+    its own; an expired count is shown until the new one lands. A project
+    with no repo of its own has nothing waiting: ("", 0)."""
+    key = repo_key(name)
+    now = time.time()
+    with _REPO_LOCK:
+        hit = _EGGS.get(key)
+        if hit and now - hit[0] < 30:
+            return hit[1]
+        if key in _EGGS_ASK:
+            return hit[1] if hit else None
+        _EGGS_ASK.add(key)
+    def work():
+        val = None
+        try:
+            with _EGGS_POOL:
+                repo = project_repo_now(name)
+                val = ready_where(repo, default_branch(repo)) if repo else ("", 0)
+        except Exception as e:      # a thread's crash would only leave the row counting
+            log_err("project_eggs", f"{name}: {e}")
+        finally:
+            with _REPO_LOCK:
+                if val is not None and repo_key(name) == key:
+                    _EGGS[key] = (time.time(), val)
+                _EGGS_ASK.discard(key)
+    if ONESHOT:
+        work()
+        with _REPO_LOCK:
+            hit = _EGGS.get(key)
+        return hit[1] if hit else None
+    threading.Thread(target=work, daemon=True).start()
+    return hit[1] if hit else None
 
 READY_X = {}   # project name -> the column its {ready} badge starts at (1-based), this render
 def ready_col(name, plain, field):
@@ -1213,9 +1283,10 @@ def recent_times():
 
 def projects_recent():
     """[(name, recency_epoch)] most recent first, for the new-session picker. Names from
-    `tm project list`; recency = the newer of the store's projects/NAME mtime
-    (what taskmaster last touched) and the last recent.tsv line for it
-    (what sessionview-session last opened). Cached 60s; [] without tm."""
+    `tm project list`; recency = the newest of the store's projects/NAME
+    mtime, its projects/NAME/tasks mtime (what taskmaster last touched: a new
+    task lands in tasks/) and the last recent.tsv line for it (what
+    sessionview-session last opened). Cached 60s; [] without tm."""
     now = time.time()
     order = picker_order()
     if _PROJ.get("t") and now - _PROJ["t"] < 60 and _PROJ.get("sock") == SOCK \
@@ -1249,10 +1320,17 @@ def projects_recent():
     for n in names:
         if not n:
             continue
-        try:
-            m = os.stat(os.path.join(store, "projects", n)).st_mtime
-        except OSError:
-            m = 0
+        m = 0
+        # projects/NAME, and its tasks/ when there is one: a new task made
+        # under projects/NAME/tasks/ bumps only tasks/ (a new directory moves
+        # its parent's mtime, no higher), so projects/NAME alone went stale
+        # for as long as tasks kept landing there. One stat more per
+        # project, never a walk of the task dirs.
+        for sub in ((), ("tasks",)):
+            try:
+                m = max(m, os.stat(os.path.join(store, "projects", n, *sub)).st_mtime)
+            except OSError:
+                pass
         if not m and n in disk:          # a disk project: the checkout's own mtime
             try:
                 m = os.stat(disk[n]).st_mtime
@@ -1266,12 +1344,9 @@ def projects_recent():
     _PROJ.update(t=now, v=out, sock=SOCK, order=order)
     return out
 
-def open_project(name):
-    """Make (or keep) NAME's session via sessionview-session, then look at it."""
-    global PICKER
-    name = name.strip()
-    if not name:
-        return
+def project_cmd(name):
+    """The sessionview-session line that makes (or keeps) NAME's session on
+    the viewed server and store."""
     cmd = [os.path.join(SESSIONVIEW_ROOT, "bin", "sessionview-session"), name, "--socket", SOCK]
     # code_nvim is sessionview-session's to decide (the cascade: built-in > host >
     # store > project); passing --nvim from here would make the host layer
@@ -1279,10 +1354,68 @@ def open_project(name):
     store = viewed_store().get("path") or ""
     if store:
         cmd += ["--store", os.path.realpath(store)]
-    subprocess.run(cmd, capture_output=True)   # the store's server starts here if it was not running
+    return cmd
+
+def open_project(name):
+    """Make (or keep) NAME's session via sessionview-session, then look at it."""
+    global PICKER
+    name = name.strip()
+    if not name:
+        return
+    subprocess.run(project_cmd(name), capture_output=True)   # the store's server starts here if it was not running
     _PROJ.clear()
     PICKER = None
     jump(("session", name))
+
+OPENING = {"done": 0, "total": 0}   # a multi-open in flight (open_projects); total 0 = none
+OPEN_WORKERS = 3
+def open_projects(names):
+    """Open every NAME (the picker's marked rows) and land on the first.
+    The first opens here, as a single pick does, so the view moves at once
+    (it also starts the store's server if it was down); the rest open in
+    a thread, three at a time, so the sidebar keeps drawing, and the line
+    under the store row reads `opening 3/6` until the last is up. One that
+    fails is named in a note at the end. A popup picker exits on its jump,
+    which would take the thread with it, so there every session opens
+    first and the jump comes last. Returns the thread, or None."""
+    names = [n for n in dict.fromkeys(x.strip() for x in names) if n]
+    if not names:
+        return None
+    first, rest = names[0], names[1:]
+    if not rest or POPUP:
+        for n in rest:
+            subprocess.run(project_cmd(n), capture_output=True)
+        open_project(first)
+        return None
+    cmds = [(n, project_cmd(n)) for n in rest]    # built now: SOCK follows the jump below
+    open_project(first)
+    OPENING.update(done=1, total=len(names))
+    def one(item):
+        n, cmd = item
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            return n, r.returncode, (r.stderr or r.stdout).strip()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return n, -1, str(e)
+    def work():
+        failed = []
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(OPEN_WORKERS) as ex:
+                for fut in as_completed([ex.submit(one, c) for c in cmds]):
+                    n, rc, err = fut.result()
+                    if rc != 0:
+                        failed.append(n)
+                        log_err("open_projects", f"{n} rc {rc}: {err}")
+                    OPENING["done"] += 1
+        finally:
+            OPENING.update(done=0, total=0)
+            _PROJ["t"] = 0           # stale, so the `open` tags redraw; never clear() under the render loop's read
+            if failed:
+                note("could not open: " + ", ".join(failed), "failed")
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    return t
 
 # ---- the ONE picker -------------------------------------------------------------
 # The new-session box, extracted so the same box serves other lists, for
@@ -1315,8 +1448,10 @@ def open_picker(kind, sess=None, pick=None):
     MENU = PROMPT = None
     sess = sess or current_session()
     if kind == "sessions":
-        p = {"title": "new session", "hint": "type a name, enter opens it", "flip": True,
-             "items": session_items, "pick": open_project}
+        p = {"title": "new session", "hint": "space marks \u00b7 ^a all \u00b7 ^g " + egg_glyph(),
+             "flip": True, "items": session_items, "pick": open_project,
+             "multi": True, "pick_many": open_projects,
+             "eggs": lambda n: project_eggs(n)}
     elif kind == "windows":
         p = {"title": "new tab", "label": sess, "hint": "enter opens \u00b7 ^p pins",
              "items": lambda: window_items(sess), "pick": lambda n: open_window(sess, n),
@@ -1329,7 +1464,12 @@ def open_picker(kind, sess=None, pick=None):
         return note(f"no picker '{kind}'")
     if pick:
         p["pick"] = pick
-    p.update(filter="", cur=0, rows=p["items"]())
+        p.pop("pick_many", None)         # a caller's own pick takes one value
+        p.pop("multi", None)
+    p.update(filter="", cur=0, rows=p["items"](), marks=[], eggs_only=False)
+    if p.get("eggs"):                    # start every count now, so ^g has them
+        for it in p["rows"]:
+            p["eggs"](it.get("value", it["name"]))
     PICKER = p
 
 def session_items():
@@ -1530,9 +1670,44 @@ def start_agent(sess, name):
         return note(why[0] if why else f"rc {r.returncode}", title="not started")
     focus_main()
 
+def egg_glyph():
+    return CFG.get("ready_glyph", "\U0001F95A")
+
+def picker_value(it):
+    return it.get("value", it["name"])
+
+def picker_filtered(p):
+    """The rows the typed filter leaves, then, with ^g on, only the ones with
+    eggs waiting, or whose count could not be told (`?`: hiding it would
+    claim there are none). A row still being counted stays out until its
+    count lands."""
+    rows = picker_rows(p["filter"], p["rows"])
+    if p.get("eggs_only") and p.get("eggs"):
+        rows = [it for it in rows if (e := p["eggs"](picker_value(it))) and e[1] != 0]
+    return rows
+
+def picker_counting(p):
+    """How many rows the typed filter leaves whose egg count is not in yet."""
+    if not p.get("eggs"):
+        return 0
+    return sum(1 for it in picker_rows(p["filter"], p["rows"]) if p["eggs"](picker_value(it)) is None)
+
+def picker_hint(p):
+    """The hint line's left half: the marks when there are some, else what
+    is still being counted under ^g, else the box's own hint."""
+    k = len(p.get("marks") or ())
+    if k:
+        return f"{k} marked \u00b7 enter opens " + ("it" if k == 1 else "all")
+    if p.get("eggs_only"):
+        c = picker_counting(p)
+        if c:
+            return f"counting {c}\u2026 \u00b7 ^g shows all"
+        return "^g shows all"
+    return p["hint"]
+
 def picker_shown(p, room):
     """The rows the filter leaves, clipped to the room, the cursor clamped."""
-    shown = picker_rows(p["filter"], p["rows"])[:max(1, room)]
+    shown = picker_filtered(p)[:max(1, room)]
     p["cur"] = min(p.get("cur", 0), max(0, len(shown) - 1))
     return shown
 
@@ -1541,24 +1716,33 @@ def render_picker(put, used, height):
     the rows the filter leaves, the cursor's row bright."""
     p = PICKER
     label = p["title"] + (" \u00b7 " + p["label"] if p.get("label") else "")
+    if p.get("eggs_only"):
+        label += " \u00b7 " + egg_glyph() + " only"
     put(C_SEL + "\033[1m" + lay(" " + label + "\tesc ", WIDTH) + "\033[22m" + NOFG,
         ("picker-close", None))
     put(C_SEL + " > " + p["filter"] + CURSOR + NOFG)
+    hint = picker_hint(p)
     if p.get("flip"):
         flip = "a-z" if picker_order() == "recent" else "recent"
-        put(C_DIM + lay(" " + p["hint"] + "\ttab: " + flip + " ", WIDTH) + NOFG, ("picker-order", None))
+        put(C_DIM + lay(" " + hint + "\ttab: " + flip + " ", WIDTH) + NOFG, ("picker-order", None))
     else:
-        put(C_DIM + lay(" " + p["hint"], WIDTH) + NOFG)
+        put(C_DIM + lay(" " + hint, WIDTH) + NOFG)
     put("")
     shown = picker_shown(p, height - used - 6)
+    marks = set(p.get("marks") or ())
     for i, it in enumerate(shown):
+        val = picker_value(it)
         live = it.get("live")
         mark = GLYPH["idle"] if live else C_DIM + "\u25cb" + NOFG
+        lead = (C_MARK + "\u2713" + NOFG) if val in marks else " "
         tag = (C_DIM + "  " + it["tag"] + NOFG) if it.get("tag") else ""
         hint = (C_DIM + it["hint"] + " ") if it.get("hint") else ""
+        e = p["eggs"](val) if p.get("eggs") else None
+        eggs = (NOFG + e[0] + " ") if e and e[0] else ""
         sel = i == p["cur"]
-        text = lay(f" {mark} " + (C_SEL if live else C_NAME) + it["name"] + NOFG + tag + "\t" + hint, WIDTH)
-        put(paint(text, True) if sel else text, ("picker-item", it.get("value", it["name"])), sel)
+        text = lay(f"{lead}{mark} " + (C_SEL if live else C_NAME) + it["name"] + NOFG + tag + "\t" + hint + eggs,
+                   WIDTH, keep_right=bool(eggs))
+        put(paint(text, True) if sel else text, ("picker-item", val), sel)
 
 def picker_keys(text):
     """Printable filters, backspace edits, arrows move, tab flips the order
@@ -1578,12 +1762,36 @@ def picker_keys(text):
             PICKER = None
             return
         if ch in "\r\n":
+            if p.get("marks") and p.get("pick_many"):   # marked rows: open them all
+                PICKER = None
+                p["pick_many"](list(p["marks"]))
+                return
             shown = picker_shown(p, 10 ** 6)
             value = shown[p["cur"]].get("value", shown[p["cur"]]["name"]) if shown else p["filter"].strip()
             PICKER = None
             if value:
                 p["pick"](value)
             return
+        if ch == " " and p.get("multi"):      # space marks the row and moves down
+            shown = picker_shown(p, 10 ** 6)
+            if shown:
+                v = picker_value(shown[p["cur"]])
+                if v in p["marks"]:
+                    p["marks"].remove(v)
+                else:
+                    p["marks"].append(v)
+                p["cur"] = min(p["cur"] + 1, len(shown) - 1)
+            i += 1; continue
+        if ch == "\x01" and p.get("multi"):   # ^a marks every row shown; again unmarks them
+            vals = [picker_value(it) for it in picker_shown(p, 10 ** 6)]
+            if vals and all(v in p["marks"] for v in vals):
+                p["marks"] = [v for v in p["marks"] if v not in vals]
+            else:
+                p["marks"] += [v for v in vals if v not in p["marks"]]
+            i += 1; continue
+        if ch == "\x07" and p.get("eggs"):    # ^g: only the rows with eggs, or all again
+            p["eggs_only"] = not p.get("eggs_only"); p["cur"] = 0
+            i += 1; continue
         if ch in "\x7f\b":
             p["filter"] = p["filter"][:-1]
         elif ch == "\x10" and p.get("pin"):   # ^p pins the highlighted row
@@ -1649,6 +1857,8 @@ def pick_main(kind, sess):
                 lines.append(row(text, selected))
             render_picker(put, 0, h)
             draw(lines)
+            if not select.select([fd], [], [], REFRESH)[0]:
+                continue                 # nothing typed: draw again, so egg counts fill in
             buf = os.read(fd, 64).decode(errors="ignore")
             for m in MOUSE_RE.finditer(buf):
                 btn, y, k = int(m.group(1)), int(m.group(3)), m.group(4)
@@ -1745,11 +1955,74 @@ def fetch_remote(host):
                        "stdout_tail": out[-400:], "env_term": os.environ.get("TERM", ""), "path": os.environ.get("PATH", "")[:200]}, f)
     except OSError:
         pass
+    if r.returncode == 0 and sess:
+        flag_ended_tabs(host, {x[0] for x in sess})
+
+# The attach a remote tab runs (remote_attach) ends in this, then =SESSION.
+ATTACH_TAIL = "exec tmux attach -t "
+
+def tab_attach_session(start_cmd):
+    """The remote session a tab was opened on, read from its pane's start
+    command (`ssh ... HOST "... exec tmux attach -t =SESSION"`), or None
+    when the pane is not a remote attach or cannot be read."""
+    try:
+        argv = shlex.split(start_cmd)
+        tail = argv[-1].rpartition(ATTACH_TAIL)[2] if argv and ATTACH_TAIL in argv[-1] else ""
+        # tmux writes the start command with each `$` escaped as `\$` inside
+        # double quotes, an escape shlex leaves in place. Undo it, or a live
+        # session with a `$` in its name reads as another name and is flagged.
+        words = shlex.split(tail.replace("\\$", "$"))
+    except ValueError:
+        return None
+    if len(words) != 1 or not words[0].startswith("=") or len(words[0]) < 2:
+        return None
+    return words[0][1:]
+
+def flag_ended_tabs(host, live):
+    """Flag each tab of the local HOST session whose remote session is not in
+    LIVE (the names a clean poll just listed). A remote host runs
+    detach-on-destroy off, so when a session ends, the client in our tab is
+    moved to another session there and the tab keeps the old name: it shows
+    a live, different session under a name that is gone.
+
+    Flagged, not closed: the user may be typing in that tab, and what it
+    shows is live; closing would kill the ssh client under their hands and
+    move them elsewhere, the very surprise a refused click avoids. The flag
+    is reversible: the tab is renamed `NAME (ended)` and carries the ended
+    session in the window option @sessionview_remote_ended, so it is flagged
+    once. A tab is judged by the session its own attach names, not by its
+    name (a tab the user renamed is still read right), and a window that is
+    not a remote attach is never touched. Called from the poll's thread, only
+    after a clean poll (rc 0, sessions listed): a failed, partial or empty
+    poll flags nothing."""
+    if not live:
+        return
+    out = sh(["tmux", "-L", "default", "list-panes", "-s", "-t", "=" + host, "-F",
+              "#{window_id}\t#{window_name}\t#{@sessionview_remote_ended}\t#{pane_start_command}"])
+    seen = set()
+    for line in out.splitlines():
+        wid, name, ended, start = (line.split("\t", 3) + ["", "", ""])[:4]
+        if not wid.startswith("@") or wid in seen or ended:
+            continue
+        rs = tab_attach_session(start)
+        if rs is None:
+            continue
+        seen.add(wid)
+        if rs in live:
+            continue
+        subprocess.run(["tmux", "-L", "default", "set-option", "-w", "-t", wid,
+                        "@sessionview_remote_ended", rs], capture_output=True)
+        subprocess.run(["tmux", "-L", "default", "rename-window", "-t", wid, f"{name} (ended)"],
+                       capture_output=True)
 
 def remote_loop(host):
     while True:
         fetch_remote(host)
         time.sleep(float(CFG.get("remote_refresh", 5)))
+
+#: the pane option remote_attach sets on a remote tab's pane: the host it runs
+#: ssh to. tmux/agent-menu.conf reads it by name.
+REMOTE_HOST_OPTION = "@sessionview_remote_host"
 
 def remote_attach(host, session, pane=""):
     """One LOCAL tmux session per remote host, named after the host, holding
@@ -1762,7 +2035,16 @@ def remote_attach(host, session, pane=""):
     sessions. The host session is hidden from the local project list;
     the host line in the sidebar is the row for it. With a pane, the remote
     window/pane is selected first (over the control socket, so it also
-    works when the local window already exists)."""
+    works when the local window already exists).
+
+    No SESSION (a seat whose pane is in no session on its host: a stale pane
+    id, a pane on another tmux server there, a partial poll) refuses with a
+    note and opens nothing. The attach once went out as `tmux attach -t =`;
+    a bare `=` is tmux's mouse-target token, so it failed, the new tab
+    closed and the user landed on some other tab."""
+    if not session:
+        return note(f"pane {pane} is in no tmux session on {host}, so there is nothing to attach"
+                    if pane else f"no session on {host} to attach", title="not attached")
     lsess = host                      # "@host" would parse as a window id
     local = sh(["tmux", "-L", "default", "list-sessions", "-F", "#{session_name}"]).split()
     have = (sh(["tmux", "-L", "default", "list-windows", "-t", "=" + lsess, "-F", "#{window_name}"]).splitlines()
@@ -1780,11 +2062,17 @@ def remote_attach(host, session, pane=""):
     cmd = sel + f"exec tmux attach -t ={shlex.quote(session)}"
     ssh = ["ssh", "-t", *SSH_CM, host, cmd]
     if have is None:
-        subprocess.run(["tmux", "-L", "default", "new-session", "-d", "-s", lsess, "-n", session,
-                        "-e", "TERM=xterm-256color", *ssh])
+        new = ["new-session", "-d", "-s", lsess]
     else:
-        subprocess.run(["tmux", "-L", "default", "new-window", "-t", "=" + lsess, "-n", session,
-                        "-e", "TERM=xterm-256color", *ssh])
+        new = ["new-window", "-t", "=" + lsess]
+    pane_id = sh(["tmux", "-L", "default", *new, "-P", "-F", "#{pane_id}", "-n", session,
+                  "-e", "TERM=xterm-256color", *ssh]).strip()
+    # Mark the pane with its host. The agent pane menu's Kill tests this mark:
+    # kill-pane here would kill only the local ssh client, never the agent, so
+    # on a marked pane Kill refuses and says where the agent runs.
+    if pane_id:
+        subprocess.run(["tmux", "-L", "default", "set-option", "-p", "-t", pane_id,
+                        REMOTE_HOST_OPTION, host], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     move_client("default", lsess)
 
 def session_list_args():
@@ -2023,8 +2311,8 @@ def scope_filter(ag, scope, p2s, cur_sess, pinned=(), store_sessions=None, no_st
     rows are not changed. It runs after `hide` and BEFORE order_agents.
 
     A pinned row (its `agent` is in PINNED) is kept under every scope. A
-    pinned row whose status is in `hide` stays hidden: `hide` runs first and
-    is the user's own standing rule, not a scope.
+    pinned row whose word (seat_hidden) is in `hide` stays hidden: `hide`
+    runs first and is the user's own standing rule, not a scope.
 
     P2S maps a pane to its session on the VIEWED server; CUR_SESS is the
     selected session. STORE_SESSIONS is the current store's session set
@@ -2280,6 +2568,9 @@ def render_base(height=None):
         render_picker(put, len(lines), height)
         return pad_to(lines, targets, height)
 
+    if OPENING["total"]:                                    # open_projects at work
+        put(C_DIM + lay(f" opening {OPENING['done']}/{OPENING['total']}\u2026", WIDTH, chrome=True) + NOFG)
+
     # -- PROJECTS: one tmux session each, two lines, no heading ---------------
     if CFG.get("show_spaces", True):
         for name, nwin, att in live_sessions:
@@ -2364,11 +2655,11 @@ def render_base(height=None):
                 put("")
     # -- the agent rows, decided BEFORE the layout so overflow can be measured --
     hide = set(CFG.get("hide", []))
-    ag = [a for a in ag if a.get("status") not in hide]
+    ag = [a for a in ag if not seat_hidden(a, hide)]
     for host in CFG.get("remotes", []):
         R = REMOTE.get(host) or {}
         for a in R.get("agents", []):
-            if a.get("status") in hide:
+            if seat_hidden(a, hide):
                 continue
             pane = a.get("tmux_pane") or ""
             ag.append(dict(a, _host=host, _window=R.get("p2w", {}).get(pane, ""),
@@ -2404,7 +2695,10 @@ def render_base(height=None):
     def heads(g):                        # heading rows a group costs: the pinned block's may be none
         return 0 if g == PIN_GROUP and PIN_HEADING is None else 1
     n_groups = sum(heads(g) for g in {grp_of(a) for a in ag}) if gb != "none" else 0
-    need = len(ag) * (2 if two_a else 1) + n_groups
+    # an agent's rows: its line(s) and the agent_gap blank rows put after it
+    gap_a = max(0, int(CFG.get("agent_gap", 0) or 0))
+    per_agent = (2 if two_a else 1) + gap_a
+    need = len(ag) * per_agent + n_groups
 
     # -- new / menu, then agents: the BOTTOM half, or higher when they need it --
     fixed = 4                                        # new/menu, blank, heading, blank
@@ -2435,7 +2729,7 @@ def render_base(height=None):
     room = height - 1 - len(lines)                   # rows left above the chevron
     shown, used, last_group = [], 0, object()
     for a in ag:
-        cost = (2 if two_a else 1) + (heads(grp_of(a)) if gb != "none" and grp_of(a) != last_group else 0)
+        cost = per_agent + (heads(grp_of(a)) if gb != "none" and grp_of(a) != last_group else 0)
         if used + cost > room - (1 if len(shown) < len(ag) - 1 else 0):
             break
         shown.append(a); used += cost
@@ -2503,7 +2797,7 @@ def render_base(height=None):
             put(paint(l1, sel), tgt, sel)                                # selected: brighter and bold
         if l2 is not None:
             put((C_BRANCH if sel else C_DIMMER) + l2 + NOFG, tgt, sel)
-        for _ in range(int(CFG.get("agent_gap", 0) or 0)):   # the space between the lines, adjustable
+        for _ in range(gap_a):           # the space between the lines, adjustable
             put("")
     if len(shown) < len(ag):
         put(C_DIM + lay(f"   +{len(ag) - len(shown)} more", WIDTH, chrome=True) + NOFG)

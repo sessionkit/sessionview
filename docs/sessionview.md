@@ -26,8 +26,8 @@ session on the right. Every other word is a verb.
 - `sidebar-toggle`: hide the sidebar, or show it again
 - `sidebar`: the sidebar itself, as the frame's left pane runs it
 
-`sessionview-config`, `sessionview-session` and `sessionview-messages`
-are on PATH too: the sidebar runs them. Type the `sessionview VERB` form.
+`sessionview` is the only command on PATH. Every tool above is a verb of
+it: type `sessionview VERB`.
 
 ## An example
 
@@ -60,6 +60,19 @@ sessionview
   are the `windows` list in your settings. `--list-windows` prints the
   ones that apply to NAME; `--window WNAME` opens one of them in the
   session NAME, which must exist. `--plain` gives one shell instead.
+- `sessionview show FILE [--dry-run] [--json] [--by NAME]`: brings FILE
+  to the front in the frame. A Neovim that already has the file open wins;
+  otherwise the project whose git url is the file's repo names the server
+  and the session, and the window is `editor`. Only the frame's client
+  moves, and only from the first level that differs: server, session,
+  window, pane, then another pane's zoom is undone and the Neovim shows the
+  file. A missing session or `editor` window is made first, and the result
+  says so. A second run changes nothing. `--dry-run` prints every command
+  and sends none; `--current` and `--target FILE` only read; `--porcelain`
+  prints one tab-separated line (result, server, session, window, pane,
+  the Neovim's socket) for a script. Exit 3 means
+  not ours (no frame, or no rule names a window for FILE), with nothing
+  moved.
 - `sessionview messages PROJECT [--store SLUG] [--print]`: the
   project's mailbox, opened read-only, so reading marks nothing. It needs
   NeoMutt, and `message` to find the mailbox.

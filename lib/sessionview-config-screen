@@ -33,12 +33,12 @@ echo "sessionview: needs Python 3.11 or newer and found none on PATH (macOS ship
 echo "  brew install python@3.14   or   uv python install 3.14" >&2
 exit 1
 ':'''
-__doc__ = """The settings screen behind `sessionview-config` (no arguments): every
+__doc__ = """The settings screen behind `sessionview config` (no arguments): every
 setting, with its default, its note and where its current value comes from.
 Not on PATH; run it as:
 
-  sessionview-config             the screen (sidebar: project menu > Settings)
-  sessionview-config list        the same rows as text, for an agent or a pipe
+  sessionview config             the screen (sidebar: project menu > Settings)
+  sessionview config list        the same rows as text, for an agent or a pipe
 
 The config command could once only read. This screen is a small configurer
 that the interface can bring up, and it can grow from there.
@@ -49,7 +49,7 @@ TWO RULES, so it cannot rot and cannot surprise:
      carries every key, its default and a `_key` note (no hidden
      defaults), so a key added there appears
      here with its help text and nothing needs editing twice.
-  2. IT WRITES ONE LAYER - the home file, via `sessionview-config set`,
+  2. IT WRITES ONE LAYER - the home file, via `sessionview config set`,
      which is the single writer. Stores and projects own layers 3 and 4; a
      UI that can quietly write into a project file is a trap.
 
@@ -96,7 +96,7 @@ def rows():
 
 
 def shown(v):
-    """Render a default the way `sessionview-config` renders a value."""
+    """Render a default the way `sessionview config` renders a value."""
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, str):

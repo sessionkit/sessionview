@@ -173,7 +173,7 @@ class Page(unittest.TestCase):
     def test_wheel_commands_are_named(self):
         with open(os.path.join(support.REPO, "pyproject.toml"), "rb") as f:
             scripts = tomllib.load(f)["project"]["scripts"]
-        self.assertEqual(len(scripts), 4)
+        self.assertEqual(list(scripts), ["sessionview"])
         body = section(self.page, "sessionview itself")
         for name in scripts:
             with self.subTest(script=name):

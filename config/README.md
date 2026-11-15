@@ -20,7 +20,7 @@ ignored is named on stderr with its file.
 
 An older install kept your file elsewhere; [Upgrading from
 0.1.0](../docs/configuration.md#upgrading-from-010) has the move. While it
-is there and `view.json` is not, `sessionview-config` reads nothing and
+is there and `view.json` is not, `sessionview config` reads nothing and
 makes nothing: it exits 3, names both paths and prints the move to run
 (the file, then any `config.json.before-*` backups and `neomuttrc` beside
 it, then the empty old dir). The sidebar shows the same message as a note
@@ -29,7 +29,7 @@ a warning, on stderr and in the sidebar, names the old one: a walk-up
 under your home dir would read it as an untrusted layer, so remove it.
 Neither check opens the old file.
 
-`sessionview-config dump --where` names the file that set each key. Keys starting
+`sessionview config dump --where` names the file that set each key. Keys starting
 with `_` are notes.
 
 ## Keys
@@ -121,12 +121,12 @@ labels.
   nothing global; default false, the shipped `git` entry sets it).
   A project's `.sessionview` replaces the whole list, but never says what
   a tab runs: an entry's `command` comes only from layers 1-2, by name.
-  `sessionview-config windows` prints it as TSV, pins applied.
+  `sessionview config windows` prints it as TSV, pins applied.
 - `store_windows` - the store view's tabs: the session the
-  sidebar's store row opens, built by `sessionview-session NAME
+  sidebar's store row opens, built by `sessionview session NAME
   --store-view STORENAME --socket SOCK --store PATH`. The same fields as
   `windows`, its own list so a project's picker and pins never see a store
-  entry; `sessionview-config windows --key store_windows` prints it. Store
+  entry; `sessionview config windows --key store_windows` prints it. Store
   mode's own names: `when` has_store_project (the store project:
   `projects/store`, else `projects/<store>`, else none - no tasks tab, no
   error) | has_slipbox | has_scripts (the store root's `slipbox/`,
@@ -178,7 +178,7 @@ labels.
   inner session). It is read for the session's own directory, so a
   project's `.sessionview` can name another agent, or `""` for none.
   Change the home choice with `^e` on an agent in the start-an-agent
-  picker (`^e` again turns it off), or `sessionview-config set
+  picker (`^e` again turns it off), or `sessionview config set
   autostart_agent NAME`. Never takes the user's shell pane; never starts
   a second seat for an agent already running. `sessionview-autostart
   --status [SOCK SESSION]` says what it will do.
@@ -191,7 +191,7 @@ labels.
 
 ## Editing it
 
-`sessionview-config set KEY VALUE` / `unset KEY` write the **home layer
+`sessionview config set KEY VALUE` / `unset KEY` write the **home layer
 only** (`~/.sessionkit/view/settings/view.json`); stores and projects own the layers
 below. A key that is not in the template is refused (`--force` overrides) —
 that is what "no hidden defaults" buys. Values are typed by the template's

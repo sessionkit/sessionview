@@ -135,14 +135,14 @@ class Case2Plan(StoreBase):
     def test_typed_lines(self):
         p = self.plan("fx-legacy", "fx-legacy")
         self.assertIn("send-keys -t =fx-legacy:tasks tm task list --project store C-m", p)
-        self.assertIn("send-keys -t =fx-legacy:messages sessionview-messages fx-legacy C-m", p)
+        self.assertIn("send-keys -t =fx-legacy:messages sessionview messages fx-legacy C-m", p)
         p = self.plan("fx-named", "fx-named")
         self.assertIn("send-keys -t =fx-named:tasks tm task list --project fx-named C-m", p)
 
     def test_messages_keyed_by_identity_never_the_session(self):
         p = self.plan("store", "fx-legacy")
-        self.assertIn("sessionview-messages fx-legacy C-m", p)
-        self.assertNotIn("sessionview-messages store", p)
+        self.assertIn("sessionview messages fx-legacy C-m", p)
+        self.assertNotIn("sessionview messages store", p)
 
     def test_no_repo_lookup_and_no_recency(self):
         self.plan("fx-legacy", "fx-legacy")

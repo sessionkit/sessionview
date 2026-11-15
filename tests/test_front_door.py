@@ -1,9 +1,9 @@
 """The front door routes `from` and `sidebar-toggle`: what the docs tell a user
 to type works from a package install, not only from a checkout.
 
-The wheel puts four console scripts on PATH (sessionview, sessionview-config,
-sessionview-session, sessionview-messages). Every other tool ships as package
-data under sessionview/_data/bin, off PATH, so a user reaches it through
+The wheel puts one console script on PATH, sessionview. Every other tool,
+config, session and messages included, ships as package data under
+sessionview/_data/bin, off PATH, so a user reaches it through
 `sessionview COMMAND`. The README and docs/configuration.md say
 `sessionview from` prints the name mail is sent as; the sidebar-toggle header
 says `sessionview sidebar-toggle` hides or shows the sidebar from a shell.
@@ -176,6 +176,23 @@ class WheelFrontDoor(unittest.TestCase):
     def test_from_is_not_its_own_command(self):
         # The premise: only the front door is on PATH, so the docs must name it.
         self.assertFalse(os.path.exists(os.path.join(self.venv, "bin", "sessionview-from")))
+
+    def test_sessionview_is_the_only_command(self):
+        made = sorted(n for n in os.listdir(os.path.join(self.venv, "bin"))
+                      if n.startswith("sessionview") or n == "tmux-sidebar")
+        self.assertEqual(made, ["sessionview"])
+
+    def test_config_session_and_messages_are_verbs(self):
+        # Each answers its usage through the front door, naming the form
+        # a user types.
+        for verb in ("config", "session", "messages"):
+            with self.subTest(verb=verb):
+                r = self.run_installed(verb, "--help")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(f"sessionview {verb}", r.stdout)
+        r = self.run_installed("config", "path")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.strip().endswith("view.json"), r.stdout)
 
     def test_sessionview_from_prints_the_env_name(self):
         r = self.run_installed("from", SESSIONVIEW_FROM="x")

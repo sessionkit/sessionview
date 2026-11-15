@@ -53,8 +53,19 @@ with no Python dependencies.
   `make release VERSION=X.Y.Z` to set it.
 - `make push` pushes the branch and the tags. `make release` never
   pushes.
-- `make publish` uploads this version to PyPI. The token is never on a
-  command line.
+- `make pypi-dist` builds the wheel and sdist that a release uploads,
+  from the tag `v<version>`, never from the checkout. It copies the tagged
+  tree to a scratch folder and pins the README's relative links there to
+  the tag, so they work on the PyPI page. The checkout's README keeps its
+  relative links. Then it checks that neither dist still has a relative
+  link. The tag must already be on the public repo, and be the same
+  commit there as here: a moved local tag is refused. The rewrite, the
+  check and the tag check are sessionkit's `scripts/pypi_readme.py`,
+  which is not copied here: `make pypi-dist SESSIONKIT=/path/to/sessionkit`
+  names a sessionkit clone that has it. Without it, `make pypi-dist`
+  refuses.
+- `make publish` runs `make pypi-dist`, then uploads this version to
+  PyPI. The token is never on a command line.
 
 Stock macOS puts Python 3.9 first on PATH. `make test` finds a newer
 one; to choose, `make test PYTHON=/path/to/python3`.

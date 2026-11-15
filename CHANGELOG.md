@@ -13,6 +13,122 @@ release moves them in here, under the new version.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-15
+
+### Added
+
+- The README's Features has an *Agent menu* entry, with an image of each:
+  the sidebar's menu on an agent row (always there) and the menu on an
+  agent's own pane (`pane_menu`, opt-in). It lists what each one offers.
+- The README's Terminals has *Right-click and Option*: a right-click goes
+  through the terminal first, then tmux. A table shows which right-click
+  opens which menu, and Option + right-click is needed only for tmux's own
+  menu over a program that uses the mouse, on a pane that is not an
+  agent's.
+- The new-session picker shows each project's eggs, the ready tags
+  waiting to merge, on the right of its row, counted as the project rows
+  count them. `^g` shows only the projects with eggs, and `^g` again
+  shows them all. The counts load in the background, and the hint line
+  says how many are still being counted.
+- The new-session picker can open several projects at once. Space marks
+  the highlighted row and moves down, `^a` marks every row the filter
+  shows (again unmarks them), and enter opens every marked project. You
+  land on the first while the rest open in the background, and
+  `opening 2/6` above the projects counts them up. `^g`, `^a` and enter
+  open every project that has something to merge.
+- The neovim skill has four moves that send no keys: `nvim-look` (mode,
+  unsaved changes, cursor and file), `nvim-modified` (does a file's buffer
+  hold unsaved changes, as an exit code), `nvim-reload` (`:checktime` after
+  an edit on disk, refused while the buffer has unsaved changes) and
+  `nvim-read` (a file as the user has it, unsaved text included).
+- `sessionview show FILE` brings a file to the front in the frame: the
+  frame's client moves to the file's server, session, window and pane,
+  another pane's zoom is undone, and the Neovim there shows the file. A
+  Neovim that already has the file open wins. A missing session or
+  `editor` window is made first, and the result says so. A second run
+  changes nothing; `--dry-run` sends nothing; exit 3 means the file is
+  not one sessionview can place, with nothing moved.
+
+### Changed
+
+- `sessionview` is now the only command on PATH. The config, session and
+  messages tools are verbs of it: type `sessionview config`,
+  `sessionview session` and `sessionview messages`. The package no longer
+  installs `sessionview-config`, `sessionview-session` or
+  `sessionview-messages`, and an install from a checkout no longer links
+  them; it removes the links an earlier install of the same checkout made,
+  and leaves any that point elsewhere. A script or alias that called one
+  of those names must call the verb instead.
+- The `messages` tabs run `sessionview messages`. A settings file made by an
+  earlier version holds the old tab command; it keeps working, read as the
+  new one, and the file is not changed. A tab command you wrote yourself
+  that names `sessionview-messages` must be changed to
+  `sessionview messages`.
+- The `hide` setting matches the word the sidebar shows for a seat (`idle`,
+  `busy`, `waiting`, `blocked`), the same word its glyph and sort use. Most
+  idle seats report the raw status `shell`, so `hide: ["idle"]` used to leave
+  them drawn; now it leaves out every seat drawn idle. A raw status in an
+  existing list, such as `shell`, still matches, so nothing it hid comes back.
+- The neovim skill states the user's rules for the editor socket: edit with
+  your normal tools; use the socket to check, look, show and reload; never
+  type into the user's buffer, and never edit one with unsaved changes. It
+  no longer teaches a key prefix for `--remote-send`: every move is a
+  `--remote-expr`.
+
+### Fixed
+
+- With `agent_gap` above 0, the sidebar counts the blank rows between
+  agents when it decides how many fit. The agents at the bottom are no
+  longer cut off silently: they all show, or the last row says
+  `+N more` with the number hidden.
+- The README said a right-click on any row opens the project menu. An
+  agent's row opens the agent menu, and the `⋯` on a selected agent row
+  does too.
+- `nvim-open` no longer types into the editor. It used to send keys, so a
+  user typing in insert mode had insert mode ended and the rest of their
+  word run as commands in the opened file. It now opens a file only when
+  the user is in normal mode and neither the current buffer nor the file's
+  buffer has unsaved changes, checking and acting in one expression;
+  otherwise it leaves the window alone and says why. A path with `<` in it
+  now opens. `nvim-tree` show, hide and toggle send no keys either.
+- The neovim skill's `nvim-tree` and `nvim-sock` exit 2 on a usage error,
+  as the other scripts do, instead of 1, which `nvim-tree` also uses for a
+  hidden tree and a refusal; `nvim-sock` exits 2 for a pane that does not
+  exist, as it does when the pane has no nvim.
+- The PyPI page's README links work. `make publish` now uploads what the
+  new `make pypi-dist` builds: the release tag's tree, with each relative
+  README link pinned to that tag on the public repository. It checks the
+  wheel and the sdist for a relative link before anything is uploaded.
+  The README in the repository keeps its relative links. `make build`
+  stays a plain local build.
+- `make pypi-dist` refuses unless the release tag here and the tag on the
+  public repository are the same commit, and names both. A local tag
+  moved after it was pushed no longer builds dists whose README links
+  point at a different tree.
+- Kill in the agent pane menu no longer acts on this machine when the
+  pane is a remote tab. It closed the local ssh attach and left the agent
+  running on its host. On a remote tab Kill now kills nothing and says on
+  the bar which host the agent runs on.
+- A click on a remote seat whose pane is in no session on its host now
+  refuses with a note in the sidebar. It used to send a blind attach,
+  which failed, closed the new tab and left you on some other tab.
+- A remote tab whose session has ended is now flagged on the next poll:
+  it is renamed `NAME (ended)`. Before, it went on showing another session
+  under the old name. The tab is not closed, so nothing you are typing in
+  it is lost.
+- The new-session picker ranks a project by its newest task. A task
+  made in the project's `tasks/` directory moved only that directory, so
+  the picker kept such a project low in its "most recent first" order,
+  however busy it was.
+- A window name from a store's or project's `.sessionview` no longer
+  carries a bidi override, isolate or mark, or a line or paragraph
+  separator, to the terminal: they are dropped where control characters
+  already were, so the name cannot reorder or break the line it is printed
+  on. A zero width joiner is kept, so an emoji sequence in a name you wrote
+  shows whole; a name of nothing else is skipped as no name. A layer
+  skipped as unreadable or not a JSON object is named by a path with these
+  characters dropped too.
+
 ## [0.3.3] - 2026-11-08
 
 ### Added

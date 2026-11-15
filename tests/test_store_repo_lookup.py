@@ -5,13 +5,13 @@ Two stores each hold a project named `skills`:
 
 - store `forge`: git url `forge:pat/skills.git`, cloned at
   ~/Code/forge/pat/skills (the path the URL maps to);
-- store `corp`: git url `gitbox:git/repos/tools-shared.git`, cloned at
+- store `corp`: git url `depot:team/shared/tools-shared.git`, cloned at
   ~/Code/example.com/Corp/tools-shared (a path the URL does NOT map to).
 
 The `tm project get` lookup is already store-scoped (`cd STORE && tm project
 get`), and the stub `tm` here answers by cwd, the way the real one does. But
 the fallbacks drop the store: the URL is turned into a path
-(~/Code/gitbox/git/repos/tools-shared, which does not exist), and then
+(~/Code/depot/team/shared/tools-shared, which does not exist), and then
 `~/Code/*/*/skills` takes the first dir named `skills` in ANY tree, so the
 corp project opens forge's clone.
 
@@ -56,7 +56,7 @@ sys.exit(0)
 _MESSAGE_STUB = "#!/bin/sh\n# message, for this test: no box ever.\nexit 2\n"
 
 FORGE_URL = "forge:pat/skills.git"
-CORP_URL = "gitbox:git/repos/tools-shared.git"
+CORP_URL = "depot:team/shared/tools-shared.git"
 
 
 class StoreRepoLookup(unittest.TestCase):
@@ -162,7 +162,7 @@ class StoreRepoLookup(unittest.TestCase):
         """The store's scp-form URL matches a clone whose origin is the ssh://
         form of it, with or without .git."""
         subprocess.run(["git", "-C", self.corp_clone, "remote", "set-url", "origin",
-                        "ssh://gitbox/git/repos/tools-shared"], env=self.env,
+                        "ssh://depot/team/shared/tools-shared"], env=self.env,
                        check=True, capture_output=True, text=True, timeout=30)
         self.assertEqual(self.repo("skills", "corp"), self.corp_clone)
 
@@ -180,9 +180,9 @@ class StoreRepoLookup(unittest.TestCase):
     def test_https_and_user_forms_match(self):
         """https://host/path and user@host:path.git read as the same repo as
         the store's host:path.git."""
-        for url in ("https://gitbox/git/repos/tools-shared.git",
-                    "git@gitbox:git/repos/tools-shared",
-                    "ssh://git@gitbox:22/git/repos/tools-shared.git/"):
+        for url in ("https://depot/team/shared/tools-shared.git",
+                    "git@depot:team/shared/tools-shared",
+                    "ssh://git@depot:22/team/shared/tools-shared.git/"):
             with self.subTest(url=url):
                 self.set_origin(self.corp_clone, url)
                 self.assertEqual(self.repo("skills", "corp"), self.corp_clone)
@@ -190,14 +190,14 @@ class StoreRepoLookup(unittest.TestCase):
     def test_url_spelled_path_must_pass_the_origin_check(self):
         """A dir at the path the URL spells is not taken on its path alone:
         its origin is another repo's, so the real clone wins."""
-        spelled = os.path.join(self.home, "Code", "gitbox", "git", "repos", "tools-shared")
+        spelled = os.path.join(self.home, "Code", "depot", "team", "shared", "tools-shared")
         self.clone(spelled, "forge:pat/something-else.git")
         self.assertEqual(self.repo("skills", "corp"), self.corp_clone)
 
     def test_url_spelled_path_with_its_origin_is_taken(self):
         """The path the URL spells, holding a clone with that origin, is the
         first candidate, ahead of one found by name."""
-        spelled = os.path.join(self.home, "Code", "gitbox", "git", "repos", "tools-shared")
+        spelled = os.path.join(self.home, "Code", "depot", "team", "shared", "tools-shared")
         self.clone(spelled, CORP_URL)
         self.assertEqual(self.repo("skills", "corp"), spelled)
 
@@ -207,8 +207,8 @@ class StoreRepoLookup(unittest.TestCase):
         alias with the forge's own path). It is named by this store's URL,
         not by NAME, so it opens, as it did before: never forge's clone."""
         shutil.rmtree(self.corp_clone)
-        spelled = os.path.join(self.home, "Code", "gitbox", "git", "repos", "tools-shared")
-        self.clone(spelled, "gitbox-alias:srv/git/tools-shared.git")
+        spelled = os.path.join(self.home, "Code", "depot", "team", "shared", "tools-shared")
+        self.clone(spelled, "depot-alias:srv/git/tools-shared.git")
         self.assertEqual(self.repo("skills", "corp"), spelled)
 
     def test_origin_match_under_project_dirs(self):

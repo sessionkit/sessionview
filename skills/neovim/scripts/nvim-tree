@@ -1,15 +1,29 @@
 #!/bin/sh
 # nvim-tree SOCK status|show|hide|toggle - Neo-tree (LazyVim's file tree,
-# Space-e) through the nvim server socket, without keystrokes. status
-# prints "shown" or "hidden" (exit 0/1) by asking nvim whether any window
-# holds a neo-tree buffer.
+# Space-e) through the nvim server socket. No keys are sent: status asks
+# whether any window holds a neo-tree buffer and prints "shown" or "hidden"
+# (exit 0/1); show/hide/toggle run the :Neotree command inside a
+# --remote-expr, and only when the user is in normal mode. Otherwise they
+# leave the window alone and exit 1 with one line. show/hide are idempotent.
+# Exit 2: usage, or no nvim on SOCK.
 set -eu
-S="${1:?socket}"; A="${2:-status}"
+usage() { echo "usage: nvim-tree SOCK status|show|hide|toggle" >&2; exit 2; }
+S="${1:-}"; A="${2:-status}"
+[ -n "$S" ] || usage
 shown() { nvim --server "$S" --remote-expr 'len(filter(range(1, winnr("$")), {_, w -> getwinvar(w, "&filetype") ==# "neo-tree"}))'; }
+neotree() {
+  m="$(nvim --server "$S" --remote-expr "mode(1) !=# 'n' ? mode(1) : [execute('Neotree $1'), 'n'][1]")"
+  [ "$m" = n ] && return 0
+  case "$m" in
+    i*) echo "nvim-tree: the user is in insert mode; left alone" >&2;;
+    *) echo "nvim-tree: the user is not in normal mode (mode $m); left alone" >&2;;
+  esac
+  exit 1
+}
 case "$A" in
   status) n="$(shown)"; [ "$n" -gt 0 ] && { echo shown; exit 0; } || { echo hidden; exit 1; };;
-  show)   [ "$(shown)" -gt 0 ] || nvim --server "$S" --remote-send '<C-\><C-n>:Neotree show<CR>'; echo shown;;
-  hide)   [ "$(shown)" -eq 0 ] || nvim --server "$S" --remote-send '<C-\><C-n>:Neotree close<CR>'; echo hidden;;
-  toggle) nvim --server "$S" --remote-send '<C-\><C-n>:Neotree toggle<CR>'; sleep 0.3; "$0" "$S" status;;
-  *) echo "nvim-tree SOCK status|show|hide|toggle" >&2; exit 1;;
+  show)   n="$(shown)"; [ "$n" -gt 0 ] || neotree show; echo shown;;
+  hide)   n="$(shown)"; [ "$n" -eq 0 ] || neotree close; echo hidden;;
+  toggle) neotree toggle; sleep 0.3; "$0" "$S" status;;
+  *) usage;;
 esac

@@ -1,6 +1,10 @@
 """What `git archive` ships is the release: the tarball a stranger downloads.
 SPINE.md is the crew's internal planning slate and must stay out of it, by
-its `export-ignore` line in .gitattributes. changelog.d/ is the other way: it
+its `export-ignore` line in .gitattributes. So must openspec/: its one file,
+config.yaml, points the openspec CLI at a private spec store, and means
+nothing to a reader of the archive; both the file and the directory entry
+are checked, since `/openspec/**` alone would leave the directory behind,
+empty. changelog.d/ is the other way: it
 ships, so the pre-publish scan reads the entries still pending there, and a
 release commit holds only its README.md. SESSIONVIEW_ARCHIVE_REF points the
 check at another commit (default HEAD), so the guard can be shown failing on
@@ -14,7 +18,7 @@ from tests import support
 REF = os.environ.get("SESSIONVIEW_ARCHIVE_REF") or "HEAD"
 
 #: Files that exist in the repo but must never reach the release archive.
-NOT_SHIPPED = ("SPINE.md",)
+NOT_SHIPPED = ("SPINE.md", "openspec/config.yaml", "openspec/")
 
 #: Files that must reach it: an export-ignore on changelog.d/ would hide the
 #: pending entries from the scan.

@@ -1,0 +1,14 @@
+#!/bin/sh
+# nvim-look SOCK - what the user has in front of them, asked through the
+# socket with no keys sent. Prints one tab-separated line:
+#   MODE  MODIFIED  LINE  COLUMN  FILE
+# MODE is mode(1) ("n" normal, "i" insert, "v" visual, ...); MODIFIED is 1
+# when the current buffer has unsaved changes, else 0; LINE and COLUMN are
+# the cursor (1-based, COLUMN in bytes); FILE is the current buffer's full
+# path, last so a tab or space in it survives (empty for an unnamed buffer).
+# Exit 2: usage, or no nvim on SOCK.
+set -eu
+S="${1:-}"
+[ -n "$S" ] || { echo "usage: nvim-look SOCK" >&2; exit 2; }
+nvim --server "$S" --remote-expr 'join([mode(1), &modified, line("."), col("."), expand("%:p")], "\t")'
+echo
